@@ -1370,6 +1370,11 @@ void ServerGameState::Tick(fx::ServerInstanceBase* instance)
 					{
 						GS_LOG("destroying entity %d:%d for client %d due to scope exit\n", entity->handle, entity->uniqifier, client->GetNetId());
 						clientDataUnlocked->entitiesToDestroy[entIdentifier] = { entity, { true, false } };
+
+						if (m_sceneManager.GetRef())
+						{
+							m_sceneManager->OnEntityOutOfScopeForClient(entity->handle, client);
+						}
 					}
 				}
 			}
@@ -1974,6 +1979,11 @@ void ServerGameState::Tick(fx::ServerInstanceBase* instance)
 						if (m_syncStyle == SyncStyle::NAK)
 						{
 							syncData.hasCreated = true;
+						}
+
+						if (m_sceneManager.GetRef())
+						{
+							m_sceneManager->OnEntityRelevantToClient(entity->handle, client);
 						}
 
 						// first-frame update
@@ -3243,6 +3253,11 @@ void ServerGameState::FinalizeClone(const fx::ClientSharedPtr& client, const fx:
 
 			OnCloneRemove(entityRef, [this, objectId, entityRef]()
 			{
+				if (m_sceneManager.GetRef())
+				{
+					m_sceneManager->OnEntityDeleted(entityRef->handle);
+				}
+
 				{
 					std::unique_lock entitiesByIdLock(m_entitiesByIdMutex);
 					m_entitiesById[objectId].reset();
@@ -4720,6 +4735,10 @@ void ServerGameState::AttachToObject(fx::ServerInstanceBase* instance)
 	m_globalBag->SetOwningPeer(-1);
 	m_sbac = sbac;
 
+	m_sceneManager = new SynchronizedSceneManager();
+	m_sceneManager->AttachToObject(instance);
+	instance->SetComponent(m_sceneManager);
+
 	creg->OnConnectedClient.Connect([this](fx::Client* client)
 	{
 		if (!fx::IsOneSync())
@@ -4734,6 +4753,11 @@ void ServerGameState::AttachToObject(fx::ServerInstanceBase* instance)
 		client->OnDrop.Connect([this, client]()
 		{
 			m_sbac->UnregisterTarget(client->GetSlotId());
+
+			if (m_sceneManager.GetRef())
+			{
+				m_sceneManager->OnClientDropped(client->GetNetId());
+			}
 		}, INT32_MIN);
 	});
 
