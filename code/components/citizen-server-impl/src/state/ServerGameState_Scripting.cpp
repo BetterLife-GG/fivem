@@ -2821,8 +2821,9 @@ static void Init()
 			{
 				animRate = 1.0f;
 			}
+			int initiatorNetId = context.GetArgument<int>(2);
 
-			bool res = sceneMan->StartScene(sceneId, animRate);
+			bool res = sceneMan->StartScene(sceneId, animRate, initiatorNetId);
 			context.SetResult(res);
 		});
 

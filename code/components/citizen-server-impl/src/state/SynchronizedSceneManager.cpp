@@ -93,7 +93,8 @@ void SynchronizedSceneManager::SendSceneToClient(const ServerSyncedScene& scene,
 		data.participants.push_back(std::move(mp));
 	}
 
-	sec->TriggerClientEvent("_cfx_internal:syncSceneCatchup", fmt::sprintf("%d", client->GetNetId()), data);
+	std::string targetSrc = std::to_string(client->GetNetId());
+	sec->TriggerClientEvent("_cfx_internal:syncSceneCatchup", targetSrc, data);
 }
 
 void SynchronizedSceneManager::SendSceneStopToClients(int sceneId)
@@ -187,7 +188,7 @@ bool SynchronizedSceneManager::AddEntityToScene(int sceneId, uint32_t entityHand
 	return true;
 }
 
-bool SynchronizedSceneManager::StartScene(int sceneId, float animRate)
+bool SynchronizedSceneManager::StartScene(int sceneId, float animRate, int initiatorClientNetId)
 {
 	std::vector<fx::ClientSharedPtr> targetClients;
 	ServerSyncedScene sceneCopy;
@@ -220,6 +221,13 @@ bool SynchronizedSceneManager::StartScene(int sceneId, float animRate)
 				{
 					if (!client)
 					{
+						return;
+					}
+
+					if (initiatorClientNetId > 0 && client->GetNetId() == static_cast<uint32_t>(initiatorClientNetId))
+					{
+						// Mark initiator as already synced so it won't receive catchup
+						scene.syncedClientNetIds.insert(client->GetNetId());
 						return;
 					}
 

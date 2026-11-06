@@ -110,7 +110,7 @@ public:
 	bool AddPedToScene(int sceneId, uint32_t entityHandle, const std::string& animDict, const std::string& animName, float blendInSpeed, float blendOutSpeed, int flags, int ragdollFlags, float moverBlendInDelta, int ikFlags);
 	bool AddEntityToScene(int sceneId, uint32_t entityHandle, const std::string& animDict, const std::string& animName, float blendInSpeed, float blendOutSpeed, int flags);
 
-	bool StartScene(int sceneId, float animRate = 1.0f);
+	bool StartScene(int sceneId, float animRate = 1.0f, int initiatorClientNetId = -1);
 	bool StopScene(int sceneId);
 	bool SetScenePhase(int sceneId, float phase);
 	bool SetSceneRate(int sceneId, float rate);
