@@ -37,6 +37,7 @@
 #include <DebugAlias.h>
 
 #include <StateBagComponent.h>
+#include <state/StateBagPolicyManager.h>
 
 #include <citizen_util/object_pool.h>
 #include <citizen_util/shared_reference.h>
@@ -1322,12 +1323,12 @@ void ServerGameState::Tick(fx::ServerInstanceBase* instance)
 				{
 					isRelevant = false;
 				}
+			}
 
 			// don't route entities belonging to hidden clients to other players
 			if (!ownsEntity && entityClient && IsPlayerHiddenFromOthers(entityClient->GetNetId()))
 			{
 				isRelevant = false;
-			}
 			}
 
 			// if we own this entity, we need to assign as relevant.
@@ -3873,6 +3874,7 @@ bool ServerGameState::ProcessClonePacket(const fx::ClientSharedPtr& client, rl::
 
 						if (distSq > 0.04f)
 						{
+							syncTree->SetPosition(entity->frozenCoords[0], entity->frozenCoords[1], entity->frozenCoords[2]);
 							auto coordsHandler = fx::ScriptEngine::GetNativeHandler(HashString("SET_ENTITY_COORDS"));
 							if (coordsHandler)
 							{
@@ -5172,6 +5174,57 @@ void ServerGameState::AttachToObject(fx::ServerInstanceBase* instance)
 	m_globalBag->SetOwningPeer(-1);
 	m_sbac = sbac;
 
+	m_sbac->OnStateBagChange.Connect([this, instance](int source, std::string_view bagName, std::string_view key, const msgpack::object& value, bool replicated)
+	{
+		if (source != 0 && fx::StateBagPolicyManager::IsKeyProtected(key))
+		{
+			auto creg = instance->GetComponent<fx::ClientRegistry>();
+			fx::ClientSharedPtr client;
+			if (creg.GetRef())
+			{
+				client = creg->GetClientBySlotID(source);
+			}
+
+			if (client)
+			{
+				console::Printf("sbag-auth", "Client %s (%d) attempted to set protected state bag key '%.*s' on bag '%.*s'. Rejecting and resyncing.\n",
+					client->GetName(), client->GetNetId(), static_cast<int>(key.size()), key.data(), static_cast<int>(bagName.size()), bagName.data());
+			}
+			else
+			{
+				console::Printf("sbag-auth", "Client with slot %d attempted to set protected state bag key '%.*s' on bag '%.*s'. Rejecting and resyncing.\n",
+				source, static_cast<int>(key.size()), key.data(), static_cast<int>(bagName.size()), bagName.data());
+			}
+
+			auto bag = m_sbac->GetStateBag(bagName);
+			std::optional<std::string> realVal = bag ? bag->GetKey(key) : std::nullopt;
+
+			std::string_view resyncVal = realVal.has_value() ? std::string_view(*realVal) : std::string_view("\xc0", 1);
+
+			net::packet::StateBagV2Packet resyncPacket;
+			resyncPacket.data.stateBagName = bagName;
+			resyncPacket.data.key = key;
+			resyncPacket.data.data = resyncVal;
+
+			SendPacket(source, resyncPacket);
+
+			auto resman = instance->GetComponent<fx::ResourceManager>();
+			if (resman.GetRef())
+			{
+				auto eventManager = resman->GetComponent<fx::ResourceEventManagerComponent>();
+				if (eventManager.GetRef())
+				{
+					int netId = client ? client->GetNetId() : -1;
+					eventManager->TriggerEvent2("onStateBagViolation", {}, netId, std::string(bagName), std::string(key));
+				}
+			}
+
+			return false;
+		}
+
+		return true;
+	});
+
 	m_sceneManager = new SynchronizedSceneManager();
 	m_sceneManager->AttachToObject(instance);
 	instance->SetComponent(m_sceneManager);
@@ -5209,6 +5262,16 @@ void ServerGameState::AttachToObject(fx::ServerInstanceBase* instance)
 			{
 				std::unique_lock _h(m_hiddenPlayersMutex);
 				m_hiddenPlayers.erase(client->GetNetId());
+			}
+
+			{
+				std::unique_lock _v(m_playerMaxVelocityMutex);
+				m_playerMaxVelocity.erase(client->GetNetId());
+			}
+
+			{
+				std::unique_lock _s(m_speedExceededMutex);
+				m_speedExceededTime.erase(client->GetNetId());
 			}
 		}, INT32_MIN);
 	});

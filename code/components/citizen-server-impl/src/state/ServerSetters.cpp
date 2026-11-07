@@ -565,12 +565,20 @@ static void ApplyVehicleProperties(sync::NetObjEntityType typeId, const std::sha
 		}
 
 		// Mod Kit & Tuning Mods
-		int modKit = GetIntProp(props, {"modKit", "kitIndex"}, 1);
-		data.kitIndex = (modKit >= 0) ? modKit : 1;
+		// In GTA V network sync, kitIndex 0 means "no mod kit installed".
+		// Lua modKit 0 corresponds to network kitIndex 1.
+		int modKit = GetIntProp(props, {"modKit", "kitIndex"}, -1);
+		if (modKit >= 0)
+		{
+			data.kitIndex = (modKit == 0) ? 1 : std::clamp(modKit, 1, 3);
+		}
+		else
+		{
+			data.kitIndex = 1;
+		}
 
 		if (props.contains("mods"))
 		{
-			data.hasMod = true;
 			const auto& modsVal = props["mods"];
 			if (modsVal.is_object())
 			{
@@ -579,10 +587,21 @@ static void ApplyVehicleProperties(sync::NetObjEntityType typeId, const std::sha
 					try
 					{
 						int slot = std::stoi(key);
-						int v = val.get<int>();
-						if (slot >= 0 && slot < 13)
+						if (val.is_number())
 						{
-							data.kitMods[slot] = v + 1;
+							int v = val.get<int>();
+							if (slot >= 0 && slot < 13)
+							{
+								if (v >= 0)
+								{
+									data.hasMod = true;
+									data.kitMods[slot] = v + 1;
+								}
+								else
+								{
+									data.kitMods[slot] = 0;
+								}
+							}
 						}
 					}
 					catch (...) {}
@@ -594,7 +613,16 @@ static void ApplyVehicleProperties(sync::NetObjEntityType typeId, const std::sha
 				{
 					if (modsVal[i].is_number())
 					{
-						data.kitMods[i] = modsVal[i].get<int>() + 1;
+						int v = modsVal[i].get<int>();
+						if (v >= 0)
+						{
+							data.hasMod = true;
+							data.kitMods[i] = v + 1;
+						}
+						else
+						{
+							data.kitMods[i] = 0;
+						}
 					}
 				}
 			}
@@ -612,8 +640,16 @@ static void ApplyVehicleProperties(sync::NetObjEntityType typeId, const std::sha
 		{
 			if (props.contains(name) && props[name].is_number())
 			{
-				data.hasMod = true;
-				data.kitMods[slot] = props[name].get<int>() + 1;
+				int v = props[name].get<int>();
+				if (v >= 0)
+				{
+					data.hasMod = true;
+					data.kitMods[slot] = v + 1;
+				}
+				else
+				{
+					data.kitMods[slot] = 0;
+				}
 			}
 		}
 

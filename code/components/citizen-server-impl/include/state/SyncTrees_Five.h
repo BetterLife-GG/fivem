@@ -742,15 +742,30 @@ struct CVehicleAppearanceDataNode : GenericSerializeDataNode<CVehicleAppearanceD
         {
             for (int i = 0; i < 13; i++)
             {
-                s.Serialize(data.hasMod);
-
-                if (data.hasMod)
+                if constexpr (Serializer::isReader)
                 {
-                    s.Serialize(32, data.kitMods[i]);
+                    bool hasSlotMod = false;
+                    s.Serialize(hasSlotMod);
+
+                    if (hasSlotMod)
+                    {
+                        s.Serialize(32, data.kitMods[i]);
+                        data.hasMod = true;
+                    }
+                    else
+                    {
+                        data.kitMods[i] = 0;
+                    }
                 }
                 else
                 {
-                    data.kitMods[i] = 0;
+                    bool hasSlotMod = (data.kitMods[i] > 0);
+                    s.Serialize(hasSlotMod);
+
+                    if (hasSlotMod)
+                    {
+                        s.Serialize(32, data.kitMods[i]);
+                    }
                 }
             }
 
@@ -3852,6 +3867,75 @@ struct SyncTree : public SyncTreeBaseImpl<TNode, false>
 					entity->syncTree->GetPosition(posOut);
 				}
 			}
+		}
+	}
+
+	virtual void SetPosition(float posX, float posY, float posZ) override
+	{
+		auto [hasDoor, doorCreationDataNode] = this->template GetData<CDoorCreationDataNode>();
+		if (hasDoor)
+		{
+			doorCreationDataNode->m_posX = posX;
+			doorCreationDataNode->m_posY = posY;
+			doorCreationDataNode->m_posZ = posZ;
+			return;
+		}
+
+		auto [hasPickupPlacement, pickupPlacementCreationDataNode] = this->template GetData<CPickupPlacementCreationDataNode>();
+		if (hasPickupPlacement)
+		{
+			pickupPlacementCreationDataNode->posX = posX;
+			pickupPlacementCreationDataNode->posY = posY;
+			pickupPlacementCreationDataNode->posZ = posZ;
+			return;
+		}
+
+		int sectorX = int((posX / 54.0f) + 512.0f);
+		int sectorY = int((posY / 54.0f) + 512.0f);
+		int sectorZ = int((posZ + 1700.0f) / 69.0f);
+
+		float sectorPosX = posX - ((sectorX - 512.0f) * 54.0f);
+		float sectorPosY = posY - ((sectorY - 512.0f) * 54.0f);
+		float sectorPosZ = posZ - ((sectorZ * 69.0f) - 1700.0f);
+
+		auto [hasSdn, secDataNode] = this->template GetData<CSectorDataNode>();
+		if (hasSdn)
+		{
+			secDataNode->m_sectorX = sectorX;
+			secDataNode->m_sectorY = sectorY;
+			secDataNode->m_sectorZ = sectorZ;
+		}
+
+		auto [hasSpdn, secPosDataNode] = this->template GetData<CSectorPositionDataNode>();
+		if (hasSpdn)
+		{
+			secPosDataNode->m_posX = sectorPosX;
+			secPosDataNode->m_posY = sectorPosY;
+			secPosDataNode->m_posZ = sectorPosZ;
+		}
+
+		auto [hasPspdn, playerSecPosDataNode] = this->template GetData<CPlayerSectorPosNode>();
+		if (hasPspdn)
+		{
+			playerSecPosDataNode->m_posX = sectorPosX;
+			playerSecPosDataNode->m_posY = sectorPosY;
+			playerSecPosDataNode->m_posZ = sectorPosZ;
+		}
+
+		auto [hasOspdn, objectSecPosDataNode] = this->template GetData<CObjectSectorPosNode>();
+		if (hasOspdn)
+		{
+			objectSecPosDataNode->m_posX = sectorPosX;
+			objectSecPosDataNode->m_posY = sectorPosY;
+			objectSecPosDataNode->m_posZ = sectorPosZ;
+		}
+
+		auto [hasPspmdn, pedSecPosMapDataNode] = this->template GetData<CPedSectorPosMapNode>();
+		if (hasPspmdn)
+		{
+			pedSecPosMapDataNode->m_posX = sectorPosX;
+			pedSecPosMapDataNode->m_posY = sectorPosY;
+			pedSecPosMapDataNode->m_posZ = sectorPosZ;
 		}
 	}
 

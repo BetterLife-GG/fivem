@@ -485,7 +485,7 @@ struct CVehicleAppearanceNodeData
 
     inline CVehicleAppearanceNodeData()
     {
-        memset(plate, 0, sizeof(plate));
+        memset(this, 0, sizeof(*this));
     }
 };
 
@@ -816,6 +816,8 @@ public:
 	// accessors
 public:
 	virtual void GetPosition(float* posOut) = 0;
+
+	virtual void SetPosition(float posX, float posY, float posZ) {}
 
 	virtual CDoorMovementDataNodeData* GetDoorMovement() = 0;
 

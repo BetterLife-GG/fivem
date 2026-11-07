@@ -3,6 +3,7 @@
 #include <ServerInstanceBase.h>
 #include <ServerInstanceBaseRef.h>
 #include <state/ServerGameState.h>
+#include <state/StateBagPolicyManager.h>
 
 #include <ResourceEventComponent.h>
 #include <ResourceManager.h>
@@ -2097,13 +2098,20 @@ static void Init()
 			if (auto vgs = entity->syncTree->GetVehicleGameState())
 			{
 				entity->authoritativeLockStatus = vgs->lockStatus;
+				entity->authoritativeDoorsOpen = vgs->doorsOpen;
+				for (int i = 0; i < 7; i++)
+				{
+					entity->authoritativeDoorPositions[i] = vgs->doorPositions[i];
+				}
 			}
 			else
 			{
 				entity->authoritativeLockStatus = 2; // default locked
+				entity->authoritativeDoorsOpen = 0;
+				memset(entity->authoritativeDoorPositions, 0, sizeof(entity->authoritativeDoorPositions));
 			}
 		}
-		return 0;
+		return true;
 	}));
 
 	fx::ScriptEngine::RegisterNativeHandler("IS_VEHICLE_DOORS_SERVER_AUTHORITATIVE", makeEntityFunction([](fx::ScriptContext& context, const fx::sync::SyncEntityPtr& entity)
@@ -2126,7 +2134,7 @@ static void Init()
 				memset(vgs->doorPositions, 0, sizeof(vgs->doorPositions));
 			}
 		}
-		return 0;
+		return true;
 	}));
 
 	fx::ScriptEngine::RegisterNativeHandler("SET_PLAYER_MAX_VELOCITY", MakeClientFunction([](fx::ScriptContext& context, const fx::ClientSharedPtr& client)
@@ -2169,7 +2177,7 @@ static void Init()
 			float maxVelocity = context.GetArgument<float>(1);
 			entity->maxVelocity = maxVelocity;
 		}
-		return 0;
+		return true;
 	}));
 
 	fx::ScriptEngine::RegisterNativeHandler("GET_ENTITY_MAX_VELOCITY", makeEntityFunction([](fx::ScriptContext& context, const fx::sync::SyncEntityPtr& entity)
@@ -2210,7 +2218,7 @@ static void Init()
 	fx::ScriptEngine::RegisterNativeHandler("NETWORK_GET_FORCED_ENTITY_OWNER", makeEntityFunction([](fx::ScriptContext& context, const fx::sync::SyncEntityPtr& entity)
 	{
 		return (entity->forcedOwnerNetId != 0) ? int(entity->forcedOwnerNetId) : -1;
-	}));
+	}, -1));
 
 
 
@@ -2260,14 +2268,20 @@ static void Init()
 		float radius = context.GetArgument<float>(3);
 		int filterBucket = context.GetArgumentCount() > 4 ? context.GetArgument<int>(4) : -1;
 
+		std::vector<int> playerList;
+
+		if (radius <= 0.0f)
+		{
+			context.SetResult(fx::SerializeObject(playerList));
+			return;
+		}
+
 		float radiusSq = radius * radius;
 
 		auto resourceManager = fx::ResourceManager::GetCurrent();
 		auto instance = resourceManager->GetComponent<fx::ServerInstanceBaseRef>()->Get();
 		auto gameState = instance->GetComponent<fx::ServerGameState>();
 		auto clientRegistry = instance->GetComponent<fx::ClientRegistry>();
-
-		std::vector<int> playerList;
 
 		clientRegistry->ForAllClients([&](const fx::ClientSharedPtr& client)
 		{
@@ -2305,7 +2319,37 @@ static void Init()
 			}
 		});
 
-		context.SetResult<const char*>(SerializeIntListToJson(playerList));
+		context.SetResult(fx::SerializeObject(playerList));
+	});
+
+	// GET_PLAYERS_IN_SCOPE(int playerNetId, [optional] bool includeSelf = false) -> table
+	fx::ScriptEngine::RegisterNativeHandler("GET_PLAYERS_IN_SCOPE", [](fx::ScriptContext& context)
+	{
+		int playerNetId = context.GetArgument<int>(0);
+		bool includeSelf = context.GetArgumentCount() > 1 ? context.GetArgument<bool>(1) : false;
+
+		std::vector<int> playerList;
+
+		auto resourceManager = fx::ResourceManager::GetCurrent();
+		auto instance = resourceManager->GetComponent<fx::ServerInstanceBaseRef>()->Get();
+		auto gameState = instance->GetComponent<fx::ServerGameState>();
+		auto clientRegistry = instance->GetComponent<fx::ClientRegistry>();
+
+		if (auto client = clientRegistry->GetClientByNetID(playerNetId))
+		{
+			if (includeSelf)
+			{
+				playerList.push_back(playerNetId);
+			}
+
+			auto [lock, clientData] = gameState->ExternalGetClientData(client);
+			for (const auto& pair : clientData->playersToSlots)
+			{
+				playerList.push_back(pair.first);
+			}
+		}
+
+		context.SetResult(fx::SerializeObject(playerList));
 	});
 
 	// GET_CLOSEST_PLAYER(float x, float y, float z, float maxRadius, [optional] int routingBucket = -1) -> int
@@ -2317,8 +2361,14 @@ static void Init()
 		float maxRadius = context.GetArgument<float>(3);
 		int filterBucket = context.GetArgumentCount() > 4 ? context.GetArgument<int>(4) : -1;
 
+		if (maxRadius <= 0.0f)
+		{
+			context.SetResult(-1);
+			return;
+		}
+
 		float minDistanceSq = maxRadius * maxRadius;
-		int closestPlayer = 0;
+		int closestPlayer = -1;
 
 		auto resourceManager = fx::ResourceManager::GetCurrent();
 		auto instance = resourceManager->GetComponent<fx::ServerInstanceBaseRef>()->Get();
@@ -2375,13 +2425,19 @@ static void Init()
 		float radius = context.GetArgument<float>(3);
 		int filterBucket = context.GetArgumentCount() > 4 ? context.GetArgument<int>(4) : -1;
 
+		std::vector<int> entityList;
+
+		if (radius <= 0.0f)
+		{
+			context.SetResult(fx::SerializeObject(entityList));
+			return;
+		}
+
 		float radiusSq = radius * radius;
 
 		auto resourceManager = fx::ResourceManager::GetCurrent();
 		auto instance = resourceManager->GetComponent<fx::ServerInstanceBaseRef>()->Get();
 		auto gameState = instance->GetComponent<fx::ServerGameState>();
-
-		std::vector<int> entityList;
 		std::shared_lock<std::shared_mutex> lock(gameState->m_entityListMutex);
 
 		for (auto& entity : gameState->m_entityList)
@@ -2407,7 +2463,7 @@ static void Init()
 			}
 		}
 
-		context.SetResult<const char*>(SerializeIntListToJson(entityList));
+		context.SetResult(fx::SerializeObject(entityList));
 	});
 
 	// GET_CLOSEST_VEHICLE(float x, float y, float z, float maxRadius, [optional] int routingBucket = -1) -> int
@@ -2418,6 +2474,12 @@ static void Init()
 		float z = context.GetArgument<float>(2);
 		float maxRadius = context.GetArgument<float>(3);
 		int filterBucket = context.GetArgumentCount() > 4 ? context.GetArgument<int>(4) : -1;
+
+		if (maxRadius <= 0.0f)
+		{
+			context.SetResult(0);
+			return;
+		}
 
 		float minDistanceSq = maxRadius * maxRadius;
 		fx::sync::SyncEntityPtr closestEntity;
@@ -2465,13 +2527,19 @@ static void Init()
 		float radius = context.GetArgument<float>(3);
 		int filterBucket = context.GetArgumentCount() > 4 ? context.GetArgument<int>(4) : -1;
 
+		std::vector<int> entityList;
+
+		if (radius <= 0.0f)
+		{
+			context.SetResult(fx::SerializeObject(entityList));
+			return;
+		}
+
 		float radiusSq = radius * radius;
 
 		auto resourceManager = fx::ResourceManager::GetCurrent();
 		auto instance = resourceManager->GetComponent<fx::ServerInstanceBaseRef>()->Get();
 		auto gameState = instance->GetComponent<fx::ServerGameState>();
-
-		std::vector<int> entityList;
 		std::shared_lock<std::shared_mutex> lock(gameState->m_entityListMutex);
 
 		for (auto& entity : gameState->m_entityList)
@@ -2497,7 +2565,7 @@ static void Init()
 			}
 		}
 
-		context.SetResult<const char*>(SerializeIntListToJson(entityList));
+		context.SetResult(fx::SerializeObject(entityList));
 	});
 
 	// GET_CLOSEST_PED(float x, float y, float z, float maxRadius, [optional] int routingBucket = -1) -> int
@@ -2508,6 +2576,12 @@ static void Init()
 		float z = context.GetArgument<float>(2);
 		float maxRadius = context.GetArgument<float>(3);
 		int filterBucket = context.GetArgumentCount() > 4 ? context.GetArgument<int>(4) : -1;
+
+		if (maxRadius <= 0.0f)
+		{
+			context.SetResult(0);
+			return;
+		}
 
 		float minDistanceSq = maxRadius * maxRadius;
 		fx::sync::SyncEntityPtr closestEntity;
@@ -2555,13 +2629,19 @@ static void Init()
 		float radius = context.GetArgument<float>(3);
 		int filterBucket = context.GetArgumentCount() > 4 ? context.GetArgument<int>(4) : -1;
 
+		std::vector<int> entityList;
+
+		if (radius <= 0.0f)
+		{
+			context.SetResult(fx::SerializeObject(entityList));
+			return;
+		}
+
 		float radiusSq = radius * radius;
 
 		auto resourceManager = fx::ResourceManager::GetCurrent();
 		auto instance = resourceManager->GetComponent<fx::ServerInstanceBaseRef>()->Get();
 		auto gameState = instance->GetComponent<fx::ServerGameState>();
-
-		std::vector<int> entityList;
 		std::shared_lock<std::shared_mutex> lock(gameState->m_entityListMutex);
 
 		for (auto& entity : gameState->m_entityList)
@@ -2587,7 +2667,7 @@ static void Init()
 			}
 		}
 
-		context.SetResult<const char*>(SerializeIntListToJson(entityList));
+		context.SetResult(fx::SerializeObject(entityList));
 	});
 
 	// GET_CLOSEST_OBJECT(float x, float y, float z, float maxRadius, [optional] int routingBucket = -1) -> int
@@ -2598,6 +2678,12 @@ static void Init()
 		float z = context.GetArgument<float>(2);
 		float maxRadius = context.GetArgument<float>(3);
 		int filterBucket = context.GetArgumentCount() > 4 ? context.GetArgument<int>(4) : -1;
+
+		if (maxRadius <= 0.0f)
+		{
+			context.SetResult(0);
+			return;
+		}
 
 		float minDistanceSq = maxRadius * maxRadius;
 		fx::sync::SyncEntityPtr closestEntity;
@@ -2643,24 +2729,32 @@ static void Init()
 		auto instance = resourceManager->GetComponent<fx::ServerInstanceBaseRef>()->Get();
 		auto gameState = instance->GetComponent<fx::ServerGameState>();
 		auto id = context.GetArgument<uint32_t>(0);
-		if (id)
+		if (!id)
 		{
-			if (auto entity = gameState->GetEntity(id))
-			{
-				int doorIndex = context.GetArgument<int>(1);
-				if (doorIndex >= 0 && doorIndex < 7)
-				{
-					entity->doorsServerAuthoritative = true;
-					entity->authoritativeDoorsOpen |= (1 << doorIndex);
-					entity->authoritativeDoorPositions[doorIndex] = 7;
+			context.SetResult(false);
+			return;
+		}
+		auto entity = gameState->GetEntity(id);
+		if (!entity)
+		{
+			context.SetResult(false);
+			return;
+		}
+		int doorIndex = context.GetArgument<int>(1);
+		if (doorIndex < 0 || doorIndex >= 7)
+		{
+			context.SetResult(false);
+			return;
+		}
 
-					if (auto vgs = entity->syncTree->GetVehicleGameState())
-					{
-						vgs->doorsOpen |= (1 << doorIndex);
-						vgs->doorPositions[doorIndex] = 7;
-					}
-				}
-			}
+		entity->doorsServerAuthoritative = true;
+		entity->authoritativeDoorsOpen |= (1 << doorIndex);
+		entity->authoritativeDoorPositions[doorIndex] = 7;
+
+		if (auto vgs = entity->syncTree->GetVehicleGameState())
+		{
+			vgs->doorsOpen |= (1 << doorIndex);
+			vgs->doorPositions[doorIndex] = 7;
 		}
 
 		auto rpcHandler = fx::ScriptEngine::GetNativeHandler(HashString("SET_VEHICLE_DOOR_OPEN"));
@@ -2678,24 +2772,32 @@ static void Init()
 		auto instance = resourceManager->GetComponent<fx::ServerInstanceBaseRef>()->Get();
 		auto gameState = instance->GetComponent<fx::ServerGameState>();
 		auto id = context.GetArgument<uint32_t>(0);
-		if (id)
+		if (!id)
 		{
-			if (auto entity = gameState->GetEntity(id))
-			{
-				int doorIndex = context.GetArgument<int>(1);
-				if (doorIndex >= 0 && doorIndex < 7)
-				{
-					entity->doorsServerAuthoritative = true;
-					entity->authoritativeDoorsOpen &= ~(1 << doorIndex);
-					entity->authoritativeDoorPositions[doorIndex] = 0;
+			context.SetResult(false);
+			return;
+		}
+		auto entity = gameState->GetEntity(id);
+		if (!entity)
+		{
+			context.SetResult(false);
+			return;
+		}
+		int doorIndex = context.GetArgument<int>(1);
+		if (doorIndex < 0 || doorIndex >= 7)
+		{
+			context.SetResult(false);
+			return;
+		}
 
-					if (auto vgs = entity->syncTree->GetVehicleGameState())
-					{
-						vgs->doorsOpen &= ~(1 << doorIndex);
-						vgs->doorPositions[doorIndex] = 0;
-					}
-				}
-			}
+		entity->doorsServerAuthoritative = true;
+		entity->authoritativeDoorsOpen &= ~(1 << doorIndex);
+		entity->authoritativeDoorPositions[doorIndex] = 0;
+
+		if (auto vgs = entity->syncTree->GetVehicleGameState())
+		{
+			vgs->doorsOpen &= ~(1 << doorIndex);
+			vgs->doorPositions[doorIndex] = 0;
 		}
 
 		auto rpcHandler = fx::ScriptEngine::GetNativeHandler(HashString("SET_VEHICLE_DOOR_SHUT"));
@@ -2713,19 +2815,25 @@ static void Init()
 		auto instance = resourceManager->GetComponent<fx::ServerInstanceBaseRef>()->Get();
 		auto gameState = instance->GetComponent<fx::ServerGameState>();
 		auto id = context.GetArgument<uint32_t>(0);
-		if (id)
+		if (!id)
 		{
-			if (auto entity = gameState->GetEntity(id))
-			{
-				float health = context.GetArgument<float>(1);
-				entity->engineHealthAuthoritative = true;
-				entity->authoritativeEngineHealth = health;
+			context.SetResult(false);
+			return;
+		}
+		auto entity = gameState->GetEntity(id);
+		if (!entity)
+		{
+			context.SetResult(false);
+			return;
+		}
 
-				if (auto vn = entity->syncTree->GetVehicleHealth())
-				{
-					vn->engineHealth = (int)health;
-				}
-			}
+		float health = context.GetArgument<float>(1);
+		entity->engineHealthAuthoritative = true;
+		entity->authoritativeEngineHealth = health;
+
+		if (auto vn = entity->syncTree->GetVehicleHealth())
+		{
+			vn->engineHealth = (int)health;
 		}
 
 		auto rpcHandler = fx::ScriptEngine::GetNativeHandler(HashString("SET_VEHICLE_ENGINE_HEALTH"));
@@ -2767,30 +2875,43 @@ static void Init()
 		context.SetResult(1000.0f);
 	});
 
-	// SET_VEHICLE_TYRE_BURST_AUTHORITATIVE(veh, tyreIndex, completely) -> bool
+	// SET_VEHICLE_TYRE_BURST_AUTHORITATIVE(veh, tyreIndex, completely, damage) -> bool
 	fx::ScriptEngine::RegisterNativeHandler("SET_VEHICLE_TYRE_BURST_AUTHORITATIVE", [](fx::ScriptContext& context)
 	{
 		auto resourceManager = fx::ResourceManager::GetCurrent();
 		auto instance = resourceManager->GetComponent<fx::ServerInstanceBaseRef>()->Get();
 		auto gameState = instance->GetComponent<fx::ServerGameState>();
 		auto id = context.GetArgument<uint32_t>(0);
-		int tyreIndex = context.GetArgument<int>(1);
-		bool completely = context.GetArgumentCount() > 2 ? context.GetArgument<bool>(2) : true;
-
-		if (id && tyreIndex >= 0 && tyreIndex < 16)
+		if (!id)
 		{
-			if (auto entity = gameState->GetEntity(id))
-			{
-				entity->tyresAuthoritative = true;
-				entity->authoritativeTyresFine = false;
-				entity->authoritativeTyreStatus[tyreIndex] = completely ? 2 : 1;
+			context.SetResult(false);
+			return;
+		}
+		auto entity = gameState->GetEntity(id);
+		if (!entity)
+		{
+			context.SetResult(false);
+			return;
+		}
 
-				if (auto vn = entity->syncTree->GetVehicleHealth())
-				{
-					vn->tyresFine = false;
-					vn->tyreStatus[tyreIndex] = completely ? 2 : 1;
-				}
-			}
+		int tyreIndex = context.GetArgument<int>(1);
+		if (tyreIndex < 0 || tyreIndex >= 16)
+		{
+			context.SetResult(false);
+			return;
+		}
+
+		bool completely = context.GetArgumentCount() > 2 ? context.GetArgument<bool>(2) : true;
+		float damage = context.GetArgumentCount() > 3 ? context.GetArgument<float>(3) : 1000.0f;
+
+		entity->tyresAuthoritative = true;
+		entity->authoritativeTyresFine = false;
+		entity->authoritativeTyreStatus[tyreIndex] = completely ? 2 : 1;
+
+		if (auto vn = entity->syncTree->GetVehicleHealth())
+		{
+			vn->tyresFine = false;
+			vn->tyreStatus[tyreIndex] = completely ? 2 : 1;
 		}
 
 		auto rpcHandler = fx::ScriptEngine::GetNativeHandler(HashString("SET_VEHICLE_TYRE_BURST"));
@@ -2800,7 +2921,7 @@ static void Init()
 			rpcCtx.Push(id);
 			rpcCtx.Push(tyreIndex);
 			rpcCtx.Push(completely);
-			rpcCtx.Push(1000.0f);
+			rpcCtx.Push(damage);
 			rpcHandler(rpcCtx);
 		}
 		context.SetResult(true);
@@ -2813,30 +2934,41 @@ static void Init()
 		auto instance = resourceManager->GetComponent<fx::ServerInstanceBaseRef>()->Get();
 		auto gameState = instance->GetComponent<fx::ServerGameState>();
 		auto id = context.GetArgument<uint32_t>(0);
-		int tyreIndex = context.GetArgument<int>(1);
-
-		if (id && tyreIndex >= 0 && tyreIndex < 16)
+		if (!id)
 		{
-			if (auto entity = gameState->GetEntity(id))
-			{
-				entity->authoritativeTyreStatus[tyreIndex] = 0;
-				bool anyBurst = false;
-				for (int i = 0; i < 16; i++)
-				{
-					if (entity->authoritativeTyreStatus[i] != 0)
-					{
-						anyBurst = true;
-						break;
-					}
-				}
-				entity->authoritativeTyresFine = !anyBurst;
+			context.SetResult(false);
+			return;
+		}
+		auto entity = gameState->GetEntity(id);
+		if (!entity)
+		{
+			context.SetResult(false);
+			return;
+		}
 
-			if (auto vn = entity->syncTree->GetVehicleHealth())
-				{
-					vn->tyreStatus[tyreIndex] = 0;
-					vn->tyresFine = !anyBurst;
-				}
+		int tyreIndex = context.GetArgument<int>(1);
+		if (tyreIndex < 0 || tyreIndex >= 16)
+		{
+			context.SetResult(false);
+			return;
+		}
+
+		entity->authoritativeTyreStatus[tyreIndex] = 0;
+		bool anyBurst = false;
+		for (int i = 0; i < 16; i++)
+		{
+			if (entity->authoritativeTyreStatus[i] != 0)
+			{
+				anyBurst = true;
+				break;
 			}
+		}
+		entity->authoritativeTyresFine = !anyBurst;
+
+		if (auto vn = entity->syncTree->GetVehicleHealth())
+		{
+			vn->tyreStatus[tyreIndex] = 0;
+			vn->tyresFine = !anyBurst;
 		}
 
 		auto rpcHandler = fx::ScriptEngine::GetNativeHandler(HashString("SET_VEHICLE_TYRE_FIXED"));
@@ -2847,9 +2979,42 @@ static void Init()
 		context.SetResult(true);
 	});
 
-	// SET_VEHICLE_DOOR_BROKEN_AUTHORITATIVE(veh, doorIndex, broken) -> bool
+	// SET_VEHICLE_DOOR_BROKEN_AUTHORITATIVE(veh, doorIndex, deleteDoor) -> bool
 	fx::ScriptEngine::RegisterNativeHandler("SET_VEHICLE_DOOR_BROKEN_AUTHORITATIVE", [](fx::ScriptContext& context)
 	{
+		auto resourceManager = fx::ResourceManager::GetCurrent();
+		auto instance = resourceManager->GetComponent<fx::ServerInstanceBaseRef>()->Get();
+		auto gameState = instance->GetComponent<fx::ServerGameState>();
+		auto id = context.GetArgument<uint32_t>(0);
+		if (!id)
+		{
+			context.SetResult(false);
+			return;
+		}
+		auto entity = gameState->GetEntity(id);
+		if (!entity)
+		{
+			context.SetResult(false);
+			return;
+		}
+
+		int doorIndex = context.GetArgument<int>(1);
+		bool deleteDoor = context.GetArgumentCount() > 2 ? context.GetArgument<bool>(2) : false;
+
+		if (doorIndex >= 0 && doorIndex < 7)
+		{
+			if (entity->doorsServerAuthoritative && deleteDoor)
+			{
+				entity->authoritativeDoorsOpen &= ~(1 << doorIndex);
+				entity->authoritativeDoorPositions[doorIndex] = 0;
+				if (auto vgs = entity->syncTree->GetVehicleGameState())
+				{
+					vgs->doorsOpen &= ~(1 << doorIndex);
+					vgs->doorPositions[doorIndex] = 0;
+				}
+			}
+		}
+
 		auto handler = fx::ScriptEngine::GetNativeHandler(HashString("SET_VEHICLE_DOOR_BROKEN"));
 		if (handler)
 		{
@@ -2902,6 +3067,16 @@ static void Init()
 
 		gameState->SetPlayerInvincible(client->GetNetId(), toggle);
 
+		auto [lock, clientData] = gameState->ExternalGetClientData(client);
+		if (clientData)
+		{
+			std::shared_lock _lock(clientData->playerEntityMutex);
+			if (auto playerEntity = clientData->playerEntity.lock())
+			{
+				playerEntity->isInvincible = toggle;
+			}
+		}
+
 		auto handler = fx::ScriptEngine::GetNativeHandler(HashString("SET_PLAYER_INVINCIBLE"));
 		if (handler)
 		{
@@ -2946,82 +3121,81 @@ static void Init()
 		gameState->SetPlayerFrozen(client->GetNetId(), toggle);
 
 		auto [lock, data] = gameState->ExternalGetClientData(client);
-		auto playerEntity = data->playerEntity.lock();
-		if (playerEntity)
+		if (data)
 		{
-			playerEntity->isFrozen = toggle;
-			if (toggle)
+			std::shared_lock _lock(data->playerEntityMutex);
+			auto playerEntity = data->playerEntity.lock();
+			if (playerEntity)
 			{
-				if (auto vel = playerEntity->syncTree->GetVelocity())
+				playerEntity->isFrozen = toggle;
+				if (toggle)
 				{
-					vel->velX = 0.0f;
-					vel->velY = 0.0f;
-					vel->velZ = 0.0f;
+					if (auto vel = playerEntity->syncTree->GetVelocity())
+					{
+						vel->velX = 0.0f;
+						vel->velY = 0.0f;
+						vel->velZ = 0.0f;
+					}
+
+					float currentPos[3] = { 0.0f, 0.0f, 0.0f };
+					playerEntity->syncTree->GetPosition(currentPos);
+					playerEntity->frozenCoords[0] = currentPos[0];
+					playerEntity->frozenCoords[1] = currentPos[1];
+					playerEntity->frozenCoords[2] = currentPos[2];
 				}
 
-				float currentPos[3] = { 0.0f, 0.0f, 0.0f };
-				playerEntity->syncTree->GetPosition(currentPos);
-				playerEntity->frozenCoords[0] = currentPos[0];
-				playerEntity->frozenCoords[1] = currentPos[1];
-				playerEntity->frozenCoords[2] = currentPos[2];
-			}
+				auto playerPedHandle = gameState->MakeScriptHandle(playerEntity);
 
-			auto playerPedHandle = gameState->MakeScriptHandle(playerEntity);
+				// 1. Invoke FREEZE_ENTITY_POSITION RPC on ped
+				auto freezeHandler = fx::ScriptEngine::GetNativeHandler(HashString("FREEZE_ENTITY_POSITION"));
+				if (freezeHandler)
+				{					fx::ScriptContextBuffer ctxBuf;
+					ctxBuf.Push(playerPedHandle);
+					ctxBuf.Push(toggle);
+					freezeHandler(ctxBuf);
+				}
 
-			// 1. Invoke FREEZE_ENTITY_POSITION RPC on ped
-			auto freezeHandler = fx::ScriptEngine::GetNativeHandler(HashString("FREEZE_ENTITY_POSITION"));
-			if (freezeHandler)
-			{
-				fx::ScriptContextBuffer ctxBuf;
-				ctxBuf.Push(playerPedHandle);
-				ctxBuf.Push(toggle);
-				freezeHandler(ctxBuf);
-			}
+				// 2. Invoke SET_PLAYER_CONTROL RPC to disable player controls
+				auto controlHandler = fx::ScriptEngine::GetNativeHandler(HashString("SET_PLAYER_CONTROL"));
+				if (controlHandler)
+				{					fx::ScriptContextBuffer ctxBuf;
+					std::string playerStr = std::to_string(client->GetNetId());
+					ctxBuf.Push(playerStr.c_str());
+					ctxBuf.Push(!toggle);
+					ctxBuf.Push(0);
+					controlHandler(ctxBuf);
+				}
 
-			// 2. Invoke SET_PLAYER_CONTROL RPC to disable player controls
-			auto controlHandler = fx::ScriptEngine::GetNativeHandler(HashString("SET_PLAYER_CONTROL"));
-			if (controlHandler)
-			{
-				fx::ScriptContextBuffer ctxBuf;
-				std::string playerStr = std::to_string(client->GetNetId());
-				ctxBuf.Push(playerStr.c_str());
-				ctxBuf.Push(!toggle);
-				ctxBuf.Push(0);
-				controlHandler(ctxBuf);
-			}
-
-			// 3. If in vehicle, freeze the vehicle too
-			if (auto pvd = playerEntity->syncTree->GetPedVehicleData())
-			{
-				if (pvd->inVehicle && pvd->curVehicle)
-				{
-					auto vehEntity = gameState->GetEntity(0, pvd->curVehicle);
-					if (vehEntity)
-					{
-						vehEntity->isFrozen = toggle;
-						if (toggle)
-						{
-							if (auto vel = vehEntity->syncTree->GetVelocity())
+				// 3. If in vehicle, freeze the vehicle too
+				if (auto pvd = playerEntity->syncTree->GetPedVehicleData())
+				{					if (pvd->inVehicle && pvd->curVehicle)
+					{						auto vehEntity = gameState->GetEntity(0, pvd->curVehicle);
+						if (vehEntity)
+						{							vehEntity->isFrozen = toggle;
+							if (toggle)
 							{
-								vel->velX = 0.0f;
-								vel->velY = 0.0f;
-								vel->velZ = 0.0f;
+								if (auto vel = vehEntity->syncTree->GetVelocity())
+								{
+									vel->velX = 0.0f;
+									vel->velY = 0.0f;
+									vel->velZ = 0.0f;
+								}
+
+								float vehPos[3] = { 0.0f, 0.0f, 0.0f };
+								vehEntity->syncTree->GetPosition(vehPos);
+								vehEntity->frozenCoords[0] = vehPos[0];
+								vehEntity->frozenCoords[1] = vehPos[1];
+								vehEntity->frozenCoords[2] = vehPos[2];
 							}
 
-							float vehPos[3] = { 0.0f, 0.0f, 0.0f };
-							vehEntity->syncTree->GetPosition(vehPos);
-							vehEntity->frozenCoords[0] = vehPos[0];
-							vehEntity->frozenCoords[1] = vehPos[1];
-							vehEntity->frozenCoords[2] = vehPos[2];
-						}
-
-						auto vehHandle = gameState->MakeScriptHandle(vehEntity);
-						if (freezeHandler)
-						{
-							fx::ScriptContextBuffer vehCtx;
-							vehCtx.Push(vehHandle);
-							vehCtx.Push(toggle);
-							freezeHandler(vehCtx);
+							auto vehHandle = gameState->MakeScriptHandle(vehEntity);
+							if (freezeHandler)
+							{
+								fx::ScriptContextBuffer vehCtx;
+								vehCtx.Push(vehHandle);
+								vehCtx.Push(toggle);
+								freezeHandler(vehCtx);
+							}
 						}
 					}
 				}
@@ -3086,29 +3260,202 @@ static void Init()
 		return entity->isFrozen;
 	}, false));
 
-	// Aliases to existing RPC natives
+	// Aliases to existing RPC natives with full parameter validation and robust defaults
 	fx::ScriptEngine::RegisterNativeHandler("SET_PED_INTO_VEHICLE_SERVER", [](fx::ScriptContext& context)
 	{
+		auto resourceManager = fx::ResourceManager::GetCurrent();
+		auto instance = resourceManager->GetComponent<fx::ServerInstanceBaseRef>()->Get();
+		auto gameState = instance->GetComponent<fx::ServerGameState>();
+
+		auto pedId = context.GetArgument<uint32_t>(0);
+		auto vehId = context.GetArgument<uint32_t>(1);
+		int seatIndex = context.GetArgumentCount() > 2 ? context.GetArgument<int>(2) : -1;
+
+		if (!pedId || !vehId)
+		{
+			context.SetResult(false);
+			return;
+		}
+
+		auto pedEntity = gameState->GetEntity(pedId);
+		auto vehEntity = gameState->GetEntity(vehId);
+		if (!pedEntity || !vehEntity)
+		{
+			context.SetResult(false);
+			return;
+		}
+
 		auto handler = fx::ScriptEngine::GetNativeHandler(HashString("SET_PED_INTO_VEHICLE"));
-		if (handler) handler(context);
+		if (handler)
+		{
+			fx::ScriptContextBuffer ctxBuf;
+			ctxBuf.Push(pedId);
+			ctxBuf.Push(vehId);
+			ctxBuf.Push(seatIndex);
+		handler(ctxBuf);
+			context.SetResult(true);
+			return;
+		}
+		context.SetResult(false);
 	});
 
 	fx::ScriptEngine::RegisterNativeHandler("TASK_LEAVE_VEHICLE_SERVER", [](fx::ScriptContext& context)
 	{
+		auto resourceManager = fx::ResourceManager::GetCurrent();
+		auto instance = resourceManager->GetComponent<fx::ServerInstanceBaseRef>()->Get();
+		auto gameState = instance->GetComponent<fx::ServerGameState>();
+
+		auto pedId = context.GetArgument<uint32_t>(0);
+		if (!pedId)
+		{
+			context.SetResult(false);
+			return;
+		}
+
+		auto pedEntity = gameState->GetEntity(pedId);
+		if (!pedEntity)
+		{
+			context.SetResult(false);
+			return;
+		}
+
+		auto vehId = context.GetArgumentCount() > 1 ? context.GetArgument<uint32_t>(1) : 0;
+		if (vehId == 0)
+		{
+			if (auto pvd = pedEntity->syncTree->GetPedVehicleData())
+			{
+				if (pvd->inVehicle && pvd->curVehicle)
+				{
+					if (auto curVeh = gameState->GetEntity(0, pvd->curVehicle))
+					{
+						vehId = gameState->MakeScriptHandle(curVeh);
+					}
+				}
+			}
+		}
+
+		if (vehId == 0)
+		{
+			context.SetResult(false);
+			return;
+		}
+
+		int flags = context.GetArgumentCount() > 2 ? context.GetArgument<int>(2) : 0;
+
 		auto handler = fx::ScriptEngine::GetNativeHandler(HashString("TASK_LEAVE_VEHICLE"));
-		if (handler) handler(context);
+		if (handler)
+		{
+			fx::ScriptContextBuffer ctxBuf;
+			ctxBuf.Push(pedId);
+			ctxBuf.Push(vehId);
+			ctxBuf.Push(flags);
+			handler(ctxBuf);
+			context.SetResult(true);
+			return;
+		}
+		context.SetResult(false);
 	});
 
 	fx::ScriptEngine::RegisterNativeHandler("SET_PED_TO_RAGDOLL_SERVER", [](fx::ScriptContext& context)
 	{
+		auto resourceManager = fx::ResourceManager::GetCurrent();
+		auto instance = resourceManager->GetComponent<fx::ServerInstanceBaseRef>()->Get();
+		auto gameState = instance->GetComponent<fx::ServerGameState>();
+
+		auto pedId = context.GetArgument<uint32_t>(0);
+		if (!pedId)
+		{
+			context.SetResult(false);
+			return;
+		}
+
+		auto pedEntity = gameState->GetEntity(pedId);
+		if (!pedEntity)
+		{
+			context.SetResult(false);
+			return;
+		}
+
+		int time1 = context.GetArgumentCount() > 1 ? context.GetArgument<int>(1) : 1000;
+		int time2 = time1;
+		int ragdollType = 0;
+		bool p4 = false;
+		bool p5 = false;
+		bool p6 = false;
+
+		if (context.GetArgumentCount() > 2)
+		{
+			int arg2 = context.GetArgument<int>(2);
+			if (context.GetArgumentCount() > 3)
+			{
+				time2 = arg2;
+				ragdollType = context.GetArgument<int>(3);
+				p4 = context.GetArgumentCount() > 4 ? context.GetArgument<bool>(4) : false;
+				p5 = context.GetArgumentCount() > 5 ? context.GetArgument<bool>(5) : false;
+				p6 = context.GetArgumentCount() > 6 ? context.GetArgument<bool>(6) : false;
+			}
+			else
+			{
+				if (arg2 <= 10)
+				{
+					ragdollType = arg2;
+					time2 = time1;
+				}
+				else
+				{
+					time2 = arg2;
+				}
+			}
+		}
+
 		auto handler = fx::ScriptEngine::GetNativeHandler(HashString("SET_PED_TO_RAGDOLL"));
-		if (handler) handler(context);
+		if (handler)
+		{
+			fx::ScriptContextBuffer ctxBuf;
+			ctxBuf.Push(pedId);
+			ctxBuf.Push(time1);
+			ctxBuf.Push(time2);
+			ctxBuf.Push(ragdollType);
+			ctxBuf.Push(p4);
+			ctxBuf.Push(p5);
+			ctxBuf.Push(p6);
+			handler(ctxBuf);
+			context.SetResult(true);
+			return;
+		}
+		context.SetResult(false);
 	});
 
 	fx::ScriptEngine::RegisterNativeHandler("CLEAR_PED_TASKS_IMMEDIATELY_SERVER", [](fx::ScriptContext& context)
 	{
+		auto resourceManager = fx::ResourceManager::GetCurrent();
+		auto instance = resourceManager->GetComponent<fx::ServerInstanceBaseRef>()->Get();
+		auto gameState = instance->GetComponent<fx::ServerGameState>();
+
+		auto pedId = context.GetArgument<uint32_t>(0);
+		if (!pedId)
+		{
+			context.SetResult(false);
+			return;
+		}
+
+		auto pedEntity = gameState->GetEntity(pedId);
+		if (!pedEntity)
+		{
+			context.SetResult(false);
+			return;
+		}
+
 		auto handler = fx::ScriptEngine::GetNativeHandler(HashString("CLEAR_PED_TASKS_IMMEDIATELY"));
-		if (handler) handler(context);
+		if (handler)
+		{
+			fx::ScriptContextBuffer ctxBuf;
+			ctxBuf.Push(pedId);
+			handler(ctxBuf);
+			context.SetResult(true);
+			return;
+		}
+		context.SetResult(false);
 	});
 
 	fx::ScriptEngine::RegisterNativeHandler("GET_VEHICLE_LOCK_ON_TARGET", makeEntityFunction([](fx::ScriptContext& context, const fx::sync::SyncEntityPtr& entity)
@@ -3552,6 +3899,24 @@ static void Init()
 		}
 
 		context.SetResult(player);
+	});
+
+	fx::ScriptEngine::RegisterNativeHandler("ADD_STATE_BAG_PROTECTED_KEY", [](fx::ScriptContext& context)
+	{
+		const char* key = context.CheckArgument<const char*>(0);
+		context.SetResult(key ? fx::StateBagPolicyManager::AddProtectedKey(key) : false);
+	});
+
+	fx::ScriptEngine::RegisterNativeHandler("REMOVE_STATE_BAG_PROTECTED_KEY", [](fx::ScriptContext& context)
+	{
+		const char* key = context.CheckArgument<const char*>(0);
+		context.SetResult(key ? fx::StateBagPolicyManager::RemoveProtectedKey(key) : false);
+	});
+
+	fx::ScriptEngine::RegisterNativeHandler("IS_STATE_BAG_KEY_PROTECTED", [](fx::ScriptContext& context)
+	{
+		const char* key = context.CheckArgument<const char*>(0);
+		context.SetResult(key ? fx::StateBagPolicyManager::IsKeyProtected(key) : false);
 	});
 
 	fx::ScriptEngine::RegisterNativeHandler("GET_ENTITIES_IN_RADIUS", [](fx::ScriptContext& context)
