@@ -5205,6 +5205,11 @@ void ServerGameState::AttachToObject(fx::ServerInstanceBase* instance)
 				std::unique_lock _i(m_invinciblePlayersMutex);
 				m_invinciblePlayers.erase(client->GetNetId());
 			}
+
+			{
+				std::unique_lock _h(m_hiddenPlayersMutex);
+				m_hiddenPlayers.erase(client->GetNetId());
+			}
 		}, INT32_MIN);
 	});
 
