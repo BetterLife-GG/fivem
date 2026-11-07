@@ -899,6 +899,7 @@ enum EntityOrphanMode : uint8_t
 	DeleteWhenNotRelevant = 0,
 	DeleteOnOwnerDisconnect = 1,
 	KeepEntity = 2,
+	PreventClientDelete = 3,
 };
 struct SyncEntityState
 {
@@ -947,6 +948,22 @@ struct SyncEntityState
 	EntityOrphanMode orphanMode = EntityOrphanMode::DeleteWhenNotRelevant;
 #ifdef STATE_FIVE
 	bool allowRemoteSyncedScenes = false;
+	bool doorsServerAuthoritative = false;
+	int authoritativeLockStatus = 0;
+	int authoritativeDoorsOpen = 0;
+	int authoritativeDoorPositions[7] = {0};
+	bool engineHealthAuthoritative = false;
+	float authoritativeEngineHealth = 1000.0f;
+	bool tyresAuthoritative = false;
+	bool authoritativeTyresFine = true;
+	int authoritativeTyreStatus[16] = {0};
+	bool plateAuthoritative = false;
+	char authoritativePlate[9] = {0};
+	bool isFrozen = false;
+	float frozenCoords[3] = { 0.0f, 0.0f, 0.0f };
+	bool isInvincible = false;
+	float maxVelocity = 0.0f;
+	uint16_t forcedOwnerNetId = 0;
 #endif
 
 	std::list<std::function<void(const fx::ClientSharedPtr& ptr)>> onCreationRPC;
@@ -1013,7 +1030,7 @@ public:
 	/// </summary>
 	inline bool ShouldServerKeepEntity()
 	{
-		return IsOwnedByServerScript() || orphanMode == EntityOrphanMode::KeepEntity;
+		return IsOwnedByServerScript() || orphanMode == EntityOrphanMode::KeepEntity || orphanMode == EntityOrphanMode::PreventClientDelete;
 	}
 
 	inline bool IsOwnedByScript()
@@ -1558,6 +1575,21 @@ public:
 
 	uint32_t MakeScriptHandle(const fx::sync::SyncEntityPtr& ptr);
 
+	void SetPlayerMaxVelocity(uint32_t netId, float maxVelocity);
+	float GetPlayerMaxVelocity(uint32_t netId) const;
+
+	void SetPlayerHiddenFromOthers(uint32_t netId, bool hidden);
+	bool IsPlayerHiddenFromOthers(uint32_t netId) const;
+
+	void SetPlayerFrozen(uint32_t netId, bool frozen);
+	bool IsPlayerFrozen(uint32_t netId) const;
+
+	void SetPlayerInvincible(uint32_t netId, bool invincible);
+	bool IsPlayerInvincible(uint32_t netId) const;
+
+	std::chrono::milliseconds GetLastSpeedExceededTime(uint32_t netId) const;
+	void SetLastSpeedExceededTime(uint32_t netId, std::chrono::milliseconds time);
+
 	std::tuple<std::unique_lock<std::mutex>, std::shared_ptr<GameStateClientData>> ExternalGetClientData(const fx::ClientSharedPtr& client);
 
 	void ForAllEntities(const std::function<void(sync::Entity*)>& cb);
@@ -1591,6 +1623,10 @@ private:
 	bool ValidateEntity(EntityLockdownMode entityLockdownMode, const fx::sync::SyncEntityPtr& entity);
 
 	void HandlePedHealthUpdate(const fx::sync::SyncEntityPtr& entity, fx::sync::CPedHealthNodeData* healthNode, int oldHealth, int oldArmour);
+
+	void HandleVehicleHealthUpdate(const fx::sync::SyncEntityPtr& entity, fx::sync::CVehicleHealthNodeData* healthNode, int oldEngineHealth, int oldPetrolHealth, int oldBodyHealth, bool oldTyresFine);
+
+	void HandlePlayerSpeedExceeded(const fx::ClientSharedPtr& client, const fx::sync::SyncEntityPtr& entity, float speed, float maxSpeed);
 
 public:
 	std::unordered_set<uint32_t> blockedEvents;
@@ -1759,6 +1795,28 @@ public:
 	SyncStyle m_syncStyle = SyncStyle::NAK;
 
 	bool m_stateBagStrictMode {false};
+
+	mutable std::shared_mutex m_playerMaxVelocityMutex;
+	std::unordered_map<uint32_t, float> m_playerMaxVelocity;
+
+	mutable std::shared_mutex m_hiddenPlayersMutex;
+	std::unordered_set<uint32_t> m_hiddenPlayers;
+
+	mutable std::shared_mutex m_frozenPlayersMutex;
+	std::unordered_set<uint32_t> m_frozenPlayers;
+
+	mutable std::shared_mutex m_invinciblePlayersMutex;
+	std::unordered_set<uint32_t> m_invinciblePlayers;
+
+	mutable std::shared_mutex m_speedExceededMutex;
+	std::unordered_map<uint32_t, std::chrono::milliseconds> m_speedExceededTime;
+
+	enum VehicleEventFlags : uint32_t
+	{
+		VehicleEventDamage = 1 << 0,
+	};
+
+	std::atomic<uint32_t> m_vehicleEventFlags{ 0 };
 };
 
 // for use in sync trees

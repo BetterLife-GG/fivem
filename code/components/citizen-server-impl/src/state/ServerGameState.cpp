@@ -1,5 +1,6 @@
 #include <StdInc.h>
 #include <GameServer.h>
+#include <ScriptEngine.h>
 
 #include <state/ServerGameState.h>
 
@@ -375,6 +376,96 @@ inline uint32_t MakeEntityHandle(uint16_t objectId)
 std::tuple<std::unique_lock<std::mutex>, std::shared_ptr<GameStateClientData>> ServerGameState::ExternalGetClientData(const fx::ClientSharedPtr& client)
 {
 	return GetClientData(this, client);
+}
+
+void ServerGameState::SetPlayerMaxVelocity(uint32_t netId, float maxVelocity)
+{
+	std::unique_lock _(m_playerMaxVelocityMutex);
+	if (maxVelocity > 0.0f)
+	{
+		m_playerMaxVelocity[netId] = maxVelocity;
+	}
+	else
+	{
+		m_playerMaxVelocity.erase(netId);
+	}
+}
+
+float ServerGameState::GetPlayerMaxVelocity(uint32_t netId) const
+{
+	std::shared_lock _(m_playerMaxVelocityMutex);
+	auto it = m_playerMaxVelocity.find(netId);
+	return (it != m_playerMaxVelocity.end()) ? it->second : 0.0f;
+}
+
+void ServerGameState::SetPlayerHiddenFromOthers(uint32_t netId, bool hidden)
+{
+	std::unique_lock _(m_hiddenPlayersMutex);
+	if (hidden)
+	{
+		m_hiddenPlayers.insert(netId);
+	}
+	else
+	{
+		m_hiddenPlayers.erase(netId);
+	}
+}
+
+bool ServerGameState::IsPlayerHiddenFromOthers(uint32_t netId) const
+{
+	std::shared_lock _(m_hiddenPlayersMutex);
+	return m_hiddenPlayers.find(netId) != m_hiddenPlayers.end();
+}
+
+void ServerGameState::SetPlayerFrozen(uint32_t netId, bool frozen)
+{
+	std::unique_lock _(m_frozenPlayersMutex);
+	if (frozen)
+	{
+		m_frozenPlayers.insert(netId);
+	}
+	else
+	{
+		m_frozenPlayers.erase(netId);
+	}
+}
+
+bool ServerGameState::IsPlayerFrozen(uint32_t netId) const
+{
+	std::shared_lock _(m_frozenPlayersMutex);
+	return m_frozenPlayers.find(netId) != m_frozenPlayers.end();
+}
+
+void ServerGameState::SetPlayerInvincible(uint32_t netId, bool invincible)
+{
+	std::unique_lock _(m_invinciblePlayersMutex);
+	if (invincible)
+	{
+		m_invinciblePlayers.insert(netId);
+	}
+	else
+	{
+		m_invinciblePlayers.erase(netId);
+	}
+}
+
+bool ServerGameState::IsPlayerInvincible(uint32_t netId) const
+{
+	std::shared_lock _(m_invinciblePlayersMutex);
+	return m_invinciblePlayers.find(netId) != m_invinciblePlayers.end();
+}
+
+std::chrono::milliseconds ServerGameState::GetLastSpeedExceededTime(uint32_t netId) const
+{
+	std::shared_lock _(m_speedExceededMutex);
+	auto it = m_speedExceededTime.find(netId);
+	return (it != m_speedExceededTime.end()) ? it->second : std::chrono::milliseconds(0);
+}
+
+void ServerGameState::SetLastSpeedExceededTime(uint32_t netId, std::chrono::milliseconds time)
+{
+	std::unique_lock _(m_speedExceededMutex);
+	m_speedExceededTime[netId] = time;
 }
 
 
@@ -959,7 +1050,7 @@ void ServerGameState::Tick(fx::ServerInstanceBase* instance)
 						continue;
 					}
 					// it's a client-owned entity, let's check for a few things
-					else if (entity->IsOwnedByClientScript() && entity->orphanMode != sync::KeepEntity)
+					else if (entity->IsOwnedByClientScript() && entity->orphanMode != sync::KeepEntity && entity->orphanMode != sync::PreventClientDelete)
 					{
 						// is the original owner offline?
 						if (entity->firstOwnerDropped)
@@ -970,13 +1061,31 @@ void ServerGameState::Tick(fx::ServerInstanceBase* instance)
 						}
 					}
 					// it's a script-less entity, we can collect it.
-					else if (!entity->IsOwnedByScript() && (entity->type != sync::NetObjEntityType::Player || !entity->GetClient()) && entity->orphanMode != sync::KeepEntity)
+					else if (!entity->IsOwnedByScript() && (entity->type != sync::NetObjEntityType::Player || !entity->GetClient()) && entity->orphanMode != sync::KeepEntity && entity->orphanMode != sync::PreventClientDelete)
 					{
 						FinalizeClone({}, entity, entity->handle, 0, "Regular entity GC");
 						continue;
 					}
 				}
 			}
+
+#ifdef STATE_FIVE
+			// Clean up orphan attached entities whose parent no longer exists
+			if (entity->syncTree && !entity->deleting)
+			{
+				if (auto attachment = entity->syncTree->GetAttachment())
+				{
+					if (attachment->attached)
+					{
+						auto parentEntity = GetEntity(0, attachment->attachedTo);
+						if ((!parentEntity || parentEntity->deleting) && (msec() - entity->createdAt > 2000ms))
+						{
+							entity->deleting = true;
+						}
+					}
+				}
+			}
+#endif
 
 			float position[3];
 			entity->syncTree->GetPosition(position);
@@ -1213,6 +1322,12 @@ void ServerGameState::Tick(fx::ServerInstanceBase* instance)
 				{
 					isRelevant = false;
 				}
+
+			// don't route entities belonging to hidden clients to other players
+			if (!ownsEntity && entityClient && IsPlayerHiddenFromOthers(entityClient->GetNetId()))
+			{
+				isRelevant = false;
+			}
 			}
 
 			// if we own this entity, we need to assign as relevant.
@@ -1652,6 +1767,12 @@ void ServerGameState::Tick(fx::ServerInstanceBase* instance)
 				auto cl = entity->GetClientUnsafe().lock();
 				if (!cl || (entity->wantsReassign && cl->GetNetId() != client->GetNetId()))
 				{
+					#ifdef STATE_FIVE
+					if (entity->forcedOwnerNetId != 0 && client->GetNetId() != entity->forcedOwnerNetId)
+					{
+						continue;
+					}
+#endif
 					entity->wantsReassign = false;
 					ReassignEntity(entity->handle, client, std::move(_)); // transfer the lock inside
 				}
@@ -2573,6 +2694,13 @@ void ServerGameState::ReassignEntityInner(uint32_t entityHandle, const fx::Clien
 		return;
 	}
 
+#ifdef STATE_FIVE
+	if (entity->forcedOwnerNetId != 0 && (!targetClient || targetClient->GetNetId() != entity->forcedOwnerNetId))
+	{
+		return;
+	}
+#endif
+
 	// perform a final std::move on the lock
 	std::unique_lock lock = std::move(lockIn);
 
@@ -2799,6 +2927,17 @@ bool ServerGameState::MoveEntityToCandidate(const fx::sync::SyncEntityPtr& entit
 	const auto& clientRegistry = m_instance->GetComponent<fx::ClientRegistry>();
 	bool hasClient = true;
 
+#ifdef STATE_FIVE
+	if (entity->forcedOwnerNetId != 0)
+	{
+		if (auto forcedClient = clientRegistry->GetClientByNetID(entity->forcedOwnerNetId))
+		{
+			return true;
+		}
+		entity->forcedOwnerNetId = 0;
+	}
+#endif
+
 	{
 		auto entityClient = entity->GetClient();
 
@@ -2957,6 +3096,13 @@ void ServerGameState::HandleClientDrop(const fx::ClientSharedPtr& client, uint16
 					markedForDeletion = true;
 				}
 			}
+
+#ifdef STATE_FIVE
+			if (entity->forcedOwnerNetId == client->GetNetId())
+			{
+				entity->forcedOwnerNetId = 0;
+			}
+#endif
 
 			if (hasSlotId)
 			{
@@ -3145,6 +3291,13 @@ void ServerGameState::ProcessCloneTakeover(const fx::ClientSharedPtr& client, rl
 			return;
 		}
 
+#ifdef STATE_FIVE
+		if (entity->forcedOwnerNetId != 0 && tgtCl->GetNetId() != entity->forcedOwnerNetId)
+		{
+			return;
+		}
+#endif
+
 		// don't do duplicate migrations
 		{
 			auto entityClient = entity->GetClient();
@@ -3204,7 +3357,7 @@ void ServerGameState::ProcessCloneRemove(const fx::ClientSharedPtr& client, rl::
 			return;
 		}
 
-		if (entity->IsOwnedByServerScript() && g_protectServerEntitiesDeletion)
+		if (entity->orphanMode == sync::PreventClientDelete || (entity->IsOwnedByServerScript() && g_protectServerEntitiesDeletion))
 		{
 			GS_LOG("%s: entity is owned by server script %d\n", __func__, objectId);
 
@@ -3232,6 +3385,38 @@ void ServerGameState::RemoveClone(const fx::ClientSharedPtr& client, uint16_t ob
 			entityRef->deleting = true;
 		}
 	}
+
+#ifdef STATE_FIVE
+	if (entityRef)
+	{
+		std::vector<sync::SyncEntityPtr> childrenToDelete;
+		{
+			std::shared_lock elm(m_entityListMutex);
+			uint16_t parentObjId = objectId & 0x1FFF;
+			for (const auto& child : m_entityList)
+			{
+				if (!child || child == entityRef || child->deleting)
+				{
+					continue;
+				}
+				if (auto syncTree = child->syncTree)
+				{
+					if (auto attachment = syncTree->GetAttachment())
+					{
+						if (attachment->attached && (attachment->attachedTo == parentObjId || attachment->attachedTo == (entityRef->handle & 0x1FFF)))
+						{
+							childrenToDelete.push_back(child);
+						}
+					}
+				}
+			}
+		}
+		for (const auto& child : childrenToDelete)
+		{
+			child->deleting = true;
+		}
+	}
+#endif
 }
 
 void ServerGameState::FinalizeClone(const fx::ClientSharedPtr& client, const fx::sync::SyncEntityPtr& entity, uint16_t objectId, uint16_t uniqifier, std::string_view finalizeReason)
@@ -3561,14 +3746,185 @@ bool ServerGameState::ProcessClonePacket(const fx::ClientSharedPtr& client, rl::
 				int oldHealth = hadHealth ? healthNode->health : 0;
 				int oldArmour = hadHealth ? healthNode->armour : 0;
 
+				auto vehHealthNode = (entity->type == sync::NetObjEntityType::Automobile || entity->type == sync::NetObjEntityType::Bike ||
+					entity->type == sync::NetObjEntityType::Boat || entity->type == sync::NetObjEntityType::Heli ||
+					entity->type == sync::NetObjEntityType::Plane || entity->type == sync::NetObjEntityType::Submarine ||
+					entity->type == sync::NetObjEntityType::Trailer)
+					? syncTree->GetVehicleHealth()
+					: nullptr;
+
+				bool hadVehHealth = entity->hasSynced && vehHealthNode != nullptr;
+				int oldEngineHealth = hadVehHealth ? vehHealthNode->engineHealth : 0;
+				int oldPetrolHealth = hadVehHealth ? vehHealthNode->petrolTankHealth : 0;
+				int oldBodyHealth = hadVehHealth ? vehHealthNode->bodyHealth : 0;
+				bool oldTyresFine = hadVehHealth ? vehHealthNode->tyresFine : true;
+
 				syncTree->ParseSync(state);
 
 				entity->hasSynced = true;
 
 				if (hadHealth)
 				{
+#ifdef STATE_FIVE
+					bool isInvincible = entity->isInvincible;
+					if (!isInvincible && client)
+					{
+						isInvincible = IsPlayerInvincible(client->GetNetId());
+					}
+
+					if (isInvincible)
+					{
+						healthNode->health = std::max(healthNode->health, oldHealth);
+						healthNode->armour = std::max(healthNode->armour, oldArmour);
+					}
+#endif
+
 					HandlePedHealthUpdate(entity, healthNode, oldHealth, oldArmour);
 				}
+
+				if (hadVehHealth)
+				{
+					HandleVehicleHealthUpdate(entity, vehHealthNode, oldEngineHealth, oldPetrolHealth, oldBodyHealth, oldTyresFine);
+				}
+
+#ifdef STATE_FIVE
+				if (entity->engineHealthAuthoritative)
+				{
+					if (vehHealthNode)
+					{
+						vehHealthNode->engineHealth = (int)entity->authoritativeEngineHealth;
+					}
+				}
+
+				if (entity->tyresAuthoritative)
+				{
+					if (vehHealthNode)
+					{
+						vehHealthNode->tyresFine = entity->authoritativeTyresFine;
+						for (int i = 0; i < 16; i++)
+						{
+							vehHealthNode->tyreStatus[i] = entity->authoritativeTyreStatus[i];
+						}
+					}
+				}
+
+				if (entity->doorsServerAuthoritative)
+				{
+					if (auto vgs = syncTree->GetVehicleGameState())
+					{
+						vgs->lockStatus = entity->authoritativeLockStatus;
+						if (entity->authoritativeLockStatus > 1)
+						{
+							vgs->doorsOpen = 0;
+							memset(vgs->doorPositions, 0, sizeof(vgs->doorPositions));
+						}
+						else
+						{
+							vgs->doorsOpen = entity->authoritativeDoorsOpen;
+							for (int i = 0; i < 7; i++)
+							{
+								if (entity->authoritativeDoorsOpen & (1 << i))
+								{
+									vgs->doorPositions[i] = entity->authoritativeDoorPositions[i];
+								}
+								else
+								{
+									vgs->doorPositions[i] = 0;
+								}
+							}
+						}
+					}
+				}
+
+				if (entity->plateAuthoritative)
+				{
+					if (auto va = syncTree->GetVehicleAppearance())
+					{
+						va->hasPlate = true;
+						memcpy(va->plate, entity->authoritativePlate, 8);
+						va->plate[8] = '\0';
+					}
+				}
+
+				bool isFrozen = entity->isFrozen;
+				if (!isFrozen && client)
+				{
+					isFrozen = IsPlayerFrozen(client->GetNetId());
+				}
+
+				if (isFrozen)
+				{
+					if (auto vel = syncTree->GetVelocity())
+					{
+						vel->velX = 0.0f;
+						vel->velY = 0.0f;
+						vel->velZ = 0.0f;
+					}
+
+					float currentPos[3] = { 0.0f, 0.0f, 0.0f };
+					syncTree->GetPosition(currentPos);
+
+					if (entity->frozenCoords[0] != 0.0f || entity->frozenCoords[1] != 0.0f || entity->frozenCoords[2] != 0.0f)
+					{
+						float dx = currentPos[0] - entity->frozenCoords[0];
+						float dy = currentPos[1] - entity->frozenCoords[1];
+						float dz = currentPos[2] - entity->frozenCoords[2];
+						float distSq = dx * dx + dy * dy + dz * dz;
+
+						if (distSq > 0.04f)
+						{
+							auto coordsHandler = fx::ScriptEngine::GetNativeHandler(HashString("SET_ENTITY_COORDS"));
+							if (coordsHandler)
+							{
+								auto entityHandle = MakeScriptHandle(entity);
+								fx::ScriptContextBuffer ctxBuf;
+								ctxBuf.Push(entityHandle);
+								ctxBuf.Push(entity->frozenCoords[0]);
+								ctxBuf.Push(entity->frozenCoords[1]);
+								ctxBuf.Push(entity->frozenCoords[2]);
+								ctxBuf.Push(false);
+								ctxBuf.Push(false);
+								ctxBuf.Push(false);
+								ctxBuf.Push(true);
+								coordsHandler(ctxBuf);
+							}
+						}
+					}
+					else if (currentPos[0] != 0.0f || currentPos[1] != 0.0f || currentPos[2] != 0.0f)
+					{
+						entity->frozenCoords[0] = currentPos[0];
+						entity->frozenCoords[1] = currentPos[1];
+						entity->frozenCoords[2] = currentPos[2];
+					}
+				}
+				else if (auto vel = syncTree->GetVelocity())
+				{
+					float maxVel = 0.0f;
+					if (entity->maxVelocity > 0.0f)
+					{
+						maxVel = entity->maxVelocity;
+					}
+					else if (client)
+					{
+						maxVel = GetPlayerMaxVelocity(client->GetNetId());
+					}
+
+					if (maxVel > 0.0f)
+					{
+						float speedSq = vel->velX * vel->velX + vel->velY * vel->velY + vel->velZ * vel->velZ;
+						if (speedSq > maxVel * maxVel)
+						{
+							float speed = std::sqrt(speedSq);
+							float scale = maxVel / speed;
+							vel->velX *= scale;
+							vel->velY *= scale;
+							vel->velZ *= scale;
+
+							HandlePlayerSpeedExceeded(client, entity, speed, maxVel);
+						}
+					}
+				}
+#endif
 			}
 			else if (parsingType == 1)
 			{
@@ -3831,6 +4187,82 @@ void ServerGameState::HandlePedHealthUpdate(const fx::sync::SyncEntityPtr& entit
 			evComponent->TriggerEvent2("onPedDeath", {}, ped, attacker, weaponHash);
 		}
 	});
+}
+
+void ServerGameState::HandleVehicleHealthUpdate(const fx::sync::SyncEntityPtr& entity, fx::sync::CVehicleHealthNodeData* healthNode, int oldEngineHealth, int oldPetrolHealth, int oldBodyHealth, bool oldTyresFine)
+{
+	int engineHealth = healthNode->engineHealth;
+	int petrolHealth = healthNode->petrolTankHealth;
+	int bodyHealth = healthNode->bodyHealth;
+	bool tyresFine = healthNode->tyresFine;
+
+	if (engineHealth == oldEngineHealth && petrolHealth == oldPetrolHealth && bodyHealth == oldBodyHealth && tyresFine == oldTyresFine)
+	{
+		return;
+	}
+
+	uint32_t flags = m_vehicleEventFlags.load(std::memory_order_relaxed);
+	if (!flags)
+	{
+		return;
+	}
+
+	gscomms_execute_callback_on_main_thread([this, entity, oldEngineHealth, engineHealth, oldPetrolHealth, petrolHealth, oldBodyHealth, bodyHealth, oldTyresFine, tyresFine]()
+	{
+		auto evComponent = m_instance->GetComponent<fx::ResourceManager>()->GetComponent<fx::ResourceEventManagerComponent>();
+		auto vehicle = MakeScriptHandle(entity);
+
+		/*NETEV vehicleDamageEvent SERVER
+		/#*
+		 * Triggered when a vehicle's health or damage status changed.
+		 *
+		 * @param vehicle - The handle of the vehicle.
+		 * @param oldEngineHealth - The engine health before the update.
+		 * @param engineHealth - The engine health after the update.
+		 * @param oldBodyHealth - The body health before the update.
+		 * @param bodyHealth - The body health after the update.
+		 * @param oldPetrolTankHealth - The petrol tank health before the update.
+		 * @param petrolTankHealth - The petrol tank health after the update.
+		 #/
+		declare function vehicleDamageEvent(vehicle: number, oldEngineHealth: number, engineHealth: number, oldBodyHealth: number, bodyHealth: number, oldPetrolTankHealth: number, petrolTankHealth: number): void;
+		*/
+		evComponent->TriggerEvent2("vehicleDamageEvent", {}, vehicle, oldEngineHealth, engineHealth, oldBodyHealth, bodyHealth, oldPetrolHealth, petrolHealth);
+		evComponent->TriggerEvent2("onVehicleHealthChanged", {}, vehicle, oldEngineHealth, engineHealth, oldBodyHealth, bodyHealth);
+	});
+}
+
+void ServerGameState::HandlePlayerSpeedExceeded(const fx::ClientSharedPtr& client, const fx::sync::SyncEntityPtr& entity, float speed, float maxSpeed)
+{
+	if (!client)
+	{
+		return;
+	}
+
+	auto now = msec();
+	if (now - GetLastSpeedExceededTime(client->GetNetId()) > std::chrono::milliseconds(500))
+	{
+		SetLastSpeedExceededTime(client->GetNetId(), now);
+
+		gscomms_execute_callback_on_main_thread([this, client, entity, speed, maxSpeed]()
+	{
+		auto evComponent = m_instance->GetComponent<fx::ResourceManager>()->GetComponent<fx::ResourceEventManagerComponent>();
+		uint32_t playerNetId = client->GetNetId();
+		uint32_t entityHandle = MakeScriptHandle(entity);
+
+		/*NETEV playerSpeedExceeded SERVER
+		/#*
+		 * Triggered when a player's entity speed exceeded their configured maximum velocity.
+		 *
+		 * @param sender - The server-side player ID.
+		 * @param speed - The attempted speed in m/s.
+		 * @param maxSpeed - The configured maximum velocity.
+		 * @param entity - The handle of the entity that exceeded speed.
+		 #/
+		declare function playerSpeedExceeded(sender: number, speed: number, maxSpeed: number, entity: number): void;
+		*/
+		evComponent->TriggerEvent2("playerSpeedExceeded", {}, playerNetId, speed, maxSpeed, entityHandle);
+	});
+	}
 }
 
 bool ServerGameState::ValidateEntity(EntityLockdownMode entityLockdownMode, const fx::sync::SyncEntityPtr& entity)
@@ -4719,6 +5151,11 @@ void ServerGameState::AttachToObject(fx::ServerInstanceBase* instance)
 		{
 			m_pedEventFlags.fetch_or(flags, std::memory_order_relaxed);
 		}
+
+		if (eventName == "vehicleDamageEvent" || eventName == "onVehicleDamage" || eventName == "onVehicleHealthChanged" || eventName == "*")
+		{
+			m_vehicleEventFlags.fetch_or(VehicleEventDamage, std::memory_order_relaxed);
+		}
 	});
 
 	m_lockdownModeVar = instance->AddVariable<fx::EntityLockdownMode>("sv_entityLockdown", ConVar_None, m_entityLockdownMode, &m_entityLockdownMode);
@@ -4757,6 +5194,16 @@ void ServerGameState::AttachToObject(fx::ServerInstanceBase* instance)
 			if (m_sceneManager.GetRef())
 			{
 				m_sceneManager->OnClientDropped(client->GetNetId());
+			}
+
+			{
+				std::unique_lock _f(m_frozenPlayersMutex);
+				m_frozenPlayers.erase(client->GetNetId());
+			}
+
+			{
+				std::unique_lock _i(m_invinciblePlayersMutex);
+				m_invinciblePlayers.erase(client->GetNetId());
 			}
 		}, INT32_MIN);
 	});
@@ -6318,6 +6765,98 @@ struct CGivePedScriptedTaskEvent
 
 	MSGPACK_DEFINE_MAP(entityNetId, taskId);
 };
+
+/*NETEV playSoundEvent SERVER
+/#*
+ * Triggered when a player triggers a networked game sound. This event can be canceled to prevent the sound from broadcasting to other players.
+ *
+ * @param sender - The server-side player ID of the player who triggered the sound.
+ * @param data - The event data.
+ #/
+declare function playSoundEvent(sender: number, data: {
+	/#*
+	 * The detected sound name (if any).
+	 #/
+	soundName: string,
+
+	/#*
+	 * The detected sound set (if any).
+	 #/
+	soundSet: string,
+
+	/#*
+	 * The length of the raw sound payload in bytes.
+	 #/
+	size: number,
+
+	/#*
+	 * The player IDs of all clients targeted to hear this sound.
+	 #/
+	targetPlayers: number[]
+}): void;
+*/
+struct CNetworkPlaySoundEvent
+{
+	void Parse(rl::MessageBufferView& buffer)
+	{
+		auto& span = buffer.GetBuffer();
+		size = span.size();
+
+		std::string current;
+		for (size_t i = 0; i < span.size(); ++i)
+		{
+			char c = static_cast<char>(span[i]);
+			if (c >= 32 && c <= 126)
+			{
+				current += c;
+			}
+			else
+			{
+				if (current.length() >= 2)
+				{
+					if (soundName.empty())
+					{
+						soundName = current;
+					}
+					else if (soundSet.empty())
+					{
+						soundSet = current;
+					}
+				}
+				current.clear();
+			}
+		}
+
+		if (current.length() >= 2)
+		{
+			if (soundName.empty())
+			{
+				soundName = current;
+			}
+			else if (soundSet.empty())
+			{
+				soundSet = current;
+			}
+		}
+	}
+
+	void SetTargetPlayers(fx::ServerGameState* sgs, const std::vector<uint16_t>& targetPlayers)
+	{
+		this->targetPlayers = targetPlayers;
+	}
+
+	inline std::string GetName()
+	{
+		return "playSoundEvent";
+	}
+
+	std::string soundName;
+	std::string soundSet;
+	size_t size = 0;
+	std::vector<uint16_t> targetPlayers;
+
+	MSGPACK_DEFINE_MAP(soundName, soundSet, size, targetPlayers);
+};
 #endif
 
 #ifdef STATE_RDR3
@@ -7460,6 +7999,16 @@ inline bool RequestControlHandler(fx::ServerGameState* sgs, const fx::ClientShar
 		}
 	}
 
+	// if the entity has a forced owner and the sender is not that owner, reject
+	if (entity->forcedOwnerNetId != 0 && client->GetNetId() != entity->forcedOwnerNetId)
+	{
+		if (reason)
+		{
+			*reason = "Entity has a forced owner";
+		}
+		return false;
+	}
+
 	// if the entity is set to ignore the policy, allow
 	if (entity->ignoreRequestControlFilter)
 	{
@@ -7576,11 +8125,6 @@ std::function<bool()> fx::ServerGameState::GetRequestControlEventHandler(const f
 #ifndef STATE_FIVE
 	return {};
 #else
-	if (g_requestControlFilterState == RequestControlFilterMode::NoFilter)
-	{
-		return {};
-	}
-
 	uint32_t objectId = 0;
 	rl::MessageBufferView msg;
 
@@ -7609,7 +8153,7 @@ std::function<bool()> fx::ServerGameState::GetRequestControlEventHandler(const f
 		}();
 
 		const char* reason = nullptr;
-		bool result = handler(this, client, objectId, &reason);
+		bool result = (g_requestControlFilterState == RequestControlFilterMode::NoFilter) ? true : handler(this, client, objectId, &reason);
 
 		if (!result)
 		{
@@ -7631,9 +8175,35 @@ std::function<bool()> fx::ServerGameState::GetRequestControlEventHandler(const f
 					lastWarn = now;
 				}
 			}
+
+			return false;
 		}
 
-		return result;
+		auto entity = GetEntity(0, objectId);
+
+		// If entity has a forced owner, reject if client is not the forced owner
+		if (entity && entity->forcedOwnerNetId != 0 && entity->forcedOwnerNetId != client->GetNetId())
+		{
+			return false;
+		}
+
+		// Trigger cancelable server event
+		auto resman = m_instance->GetComponent<fx::ResourceManager>();
+		if (resman.GetRef())
+		{
+			auto evComponent = resman->GetComponent<fx::ResourceEventManagerComponent>();
+			if (evComponent.GetRef())
+			{
+				int entityHandle = entity ? MakeScriptHandle(entity) : 0;
+				bool allowed = evComponent->TriggerEvent2("requestControlEvent", std::to_string(client->GetNetId()), int(client->GetNetId()), entityHandle, int(objectId));
+				if (!allowed)
+				{
+					return false;
+				}
+			}
+		}
+
+		return true;
 	};
 #endif
 }
@@ -7643,11 +8213,6 @@ std::function<bool()> fx::ServerGameState::GetRequestControlEventHandlerWithEven
 #ifndef STATE_FIVE
 	return {};
 #else
-	if (g_requestControlFilterState == RequestControlFilterMode::NoFilter)
-	{
-		return {};
-	}
-	
 	rl::MessageBufferView msg {netGameEvent.data.GetValue()};
 	const uint32_t objectId = msg.Read<uint32_t>(13);
 
@@ -7671,7 +8236,7 @@ std::function<bool()> fx::ServerGameState::GetRequestControlEventHandlerWithEven
 		}();
 
 		const char* reason = nullptr;
-		bool result = handler(this, client, objectId, &reason);
+		bool result = (g_requestControlFilterState == RequestControlFilterMode::NoFilter) ? true : handler(this, client, objectId, &reason);
 
 		if (!result)
 		{
@@ -7693,9 +8258,35 @@ std::function<bool()> fx::ServerGameState::GetRequestControlEventHandlerWithEven
 					lastWarn = now;
 				}
 			}
+
+			return false;
 		}
 
-		return result;
+		auto entity = GetEntity(0, objectId);
+
+		// If entity has a forced owner, reject if client is not the forced owner
+		if (entity && entity->forcedOwnerNetId != 0 && entity->forcedOwnerNetId != client->GetNetId())
+		{
+			return false;
+		}
+
+		// Trigger cancelable server event
+		auto resman = m_instance->GetComponent<fx::ResourceManager>();
+		if (resman.GetRef())
+		{
+			auto evComponent = resman->GetComponent<fx::ResourceEventManagerComponent>();
+			if (evComponent.GetRef())
+			{
+				int entityHandle = entity ? MakeScriptHandle(entity) : 0;
+				bool allowed = evComponent->TriggerEvent2("requestControlEvent", std::to_string(client->GetNetId()), int(client->GetNetId()), entityHandle, int(objectId));
+				if (!allowed)
+				{
+					return false;
+				}
+			}
+		}
+
+		return true;
 	};
 #endif
 }
@@ -7730,10 +8321,15 @@ std::function<bool()> fx::ServerGameState::GetGameEventHandler(const fx::ClientS
 	if (eventType == NETWORK_PLAY_SCRIPT_SOUND_EVENT)
 #endif
 	{
-		return []()
+		if (!g_networkedSoundsEnabled)
 		{
-			return g_networkedSoundsEnabled;
-		};
+			return []()
+			{
+				return false;
+			};
+		}
+
+		return GetHandler<CNetworkPlaySoundEvent>(instance, client, std::move(buffer), targetPlayers);
 	}
 
 	if (eventType == REQUEST_PHONE_EXPLOSION_EVENT)
@@ -7858,10 +8454,15 @@ std::function<bool()> fx::ServerGameState::GetGameEventHandlerWithEvent(const fx
 	if (eventNameHash == net::force_consteval<uint32_t, HashRageString("NETWORK_PLAY_SCRIPT_SOUND_EVENT")>)
 #endif
 	{
-		return []()
+		if (!g_networkedSoundsEnabled)
 		{
-			return g_networkedSoundsEnabled;
-		};
+			return []()
+			{
+				return false;
+			};
+		}
+
+		return GetHandlerWithEvent<CNetworkPlaySoundEvent>(instance, client, netGameEvent, targetPlayers);
 	}
 
 	if (eventNameHash == net::force_consteval<uint32_t, HashRageString("REQUEST_PHONE_EXPLOSION_EVENT")>)

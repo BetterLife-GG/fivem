@@ -80,6 +80,11 @@ context_rpc 'SET_VEHICLE_DIRT_LEVEL'
 context_rpc 'SET_VEHICLE_DOOR_BROKEN'
 context_rpc 'SET_VEHICLE_NUMBER_PLATE_TEXT'
 context_rpc 'SET_VEHICLE_DOORS_LOCKED'
+context_rpc 'SET_VEHICLE_DOOR_OPEN'
+context_rpc 'SET_VEHICLE_DOOR_SHUT'
+context_rpc 'SET_VEHICLE_TYRE_BURST'
+context_rpc 'SET_VEHICLE_TYRE_FIXED'
+context_rpc 'SET_VEHICLE_ENGINE_HEALTH'
 
 -- OBJECT
 entity_rpc 'CREATE_OBJECT'

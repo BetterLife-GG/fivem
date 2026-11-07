@@ -504,6 +504,95 @@ static InitFunction initFunction([]()
 
 			ctx.SetResult(guid);
 		});
+
+		fx::ScriptEngine::RegisterNativeHandler("CREATE_PED_SERVER_SETTER", [=](fx::ScriptContext& ctx)
+		{
+			uint32_t resourceHash = 0;
+
+			fx::OMPtr<IScriptRuntime> runtime;
+
+			if (FX_SUCCEEDED(fx::GetCurrentScriptRuntime(&runtime)))
+			{
+				fx::Resource* resource = reinterpret_cast<fx::Resource*>(runtime->GetParentObject());
+
+				if (resource)
+				{
+					resourceHash = HashString(resource->GetName().c_str());
+				}
+			}
+
+			uint32_t model = 0;
+			float x = 0.0f, y = 0.0f, z = 0.0f, heading = 0.0f;
+
+			if (ctx.GetArgumentCount() >= 6)
+			{
+				model = ctx.GetArgument<uint32_t>(1);
+				x = ctx.GetArgument<float>(2);
+				y = ctx.GetArgument<float>(3);
+				z = ctx.GetArgument<float>(4);
+				heading = ctx.GetArgument<float>(5);
+			}
+			else
+			{
+				model = ctx.GetArgument<uint32_t>(0);
+				x = ctx.GetArgument<float>(1);
+				y = ctx.GetArgument<float>(2);
+				z = ctx.GetArgument<float>(3);
+				heading = (ctx.GetArgumentCount() > 4) ? ctx.GetArgument<float>(4) : 0.0f;
+			}
+
+			auto tree = MakePed(model, x, y, z, resourceHash, heading);
+
+			auto sgs = ref->GetComponent<fx::ServerGameState>();
+			auto entity = sgs->CreateEntityFromTree(sync::NetObjEntityType::Ped, tree);
+
+			uint32_t guid = 0;
+
+			if (entity)
+			{
+				guid = sgs->MakeScriptHandle(entity);
+			}
+
+			ctx.SetResult(guid);
+		});
+
+		fx::ScriptEngine::RegisterNativeHandler("CREATE_OBJECT_SERVER_SETTER", [=](fx::ScriptContext& ctx)
+		{
+			uint32_t resourceHash = 0;
+
+			fx::OMPtr<IScriptRuntime> runtime;
+
+			if (FX_SUCCEEDED(fx::GetCurrentScriptRuntime(&runtime)))
+			{
+				fx::Resource* resource = reinterpret_cast<fx::Resource*>(runtime->GetParentObject());
+
+				if (resource)
+				{
+					resourceHash = HashString(resource->GetName().c_str());
+				}
+			}
+
+			uint32_t model = ctx.GetArgument<uint32_t>(0);
+			float x = ctx.GetArgument<float>(1);
+			float y = ctx.GetArgument<float>(2);
+			float z = ctx.GetArgument<float>(3);
+			float heading = (ctx.GetArgumentCount() > 4) ? ctx.GetArgument<float>(4) : 0.0f;
+			bool dynamic = (ctx.GetArgumentCount() > 5) ? ctx.GetArgument<bool>(5) : false;
+
+			auto tree = MakeObject(model, x, y, z, resourceHash, dynamic, heading);
+
+			auto sgs = ref->GetComponent<fx::ServerGameState>();
+			auto entity = sgs->CreateEntityFromTree(sync::NetObjEntityType::Object, tree);
+
+			uint32_t guid = 0;
+
+			if (entity)
+			{
+				guid = sgs->MakeScriptHandle(entity);
+			}
+
+			ctx.SetResult(guid);
+		});
 	});
 });
 }

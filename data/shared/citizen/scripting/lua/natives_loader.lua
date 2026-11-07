@@ -44,7 +44,7 @@ local Global = setmetatable({}, { __newindex = function(_, n, v)
 	rs(_, n, v)
 end})
 
-local nativeEnv = {
+local nativeEnv = setmetatable({
     Global = Global,
     _mfr = _mfr,
     _obj = _obj,
@@ -67,7 +67,9 @@ local nativeEnv = {
     _gn = _gn,
     _ii = _ii,
     _fi = _fi
-}
+}, {
+    __index = g
+})
 
 local nilCache = {}
 
