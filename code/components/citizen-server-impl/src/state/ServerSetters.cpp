@@ -12,6 +12,9 @@
 
 #include <boost/mpl/at.hpp>
 #include <boost/function_types/parameter_types.hpp>
+#include <json.hpp>
+
+using json = nlohmann::json;
 
 namespace fx
 {
@@ -241,7 +244,7 @@ std::shared_ptr<sync::SyncTreeBase> MakeObject(uint32_t model, float posX, float
 }
 
 template<typename TNode>
-auto GetNode(sync::NetObjEntityType objectType, const std::shared_ptr<sync::SyncTreeBase>& tree)
+auto GetVehicleNode(sync::NetObjEntityType objectType, const std::shared_ptr<sync::SyncTreeBase>& tree)
 {
 	switch (objectType)
 	{
@@ -251,32 +254,54 @@ auto GetNode(sync::NetObjEntityType objectType, const std::shared_ptr<sync::Sync
 			return std::static_pointer_cast<sync::CBikeSyncTree>(tree)->GetNode<TNode>();
 		case sync::NetObjEntityType::Boat:
 			return std::static_pointer_cast<sync::CBoatSyncTree>(tree)->GetNode<TNode>();
-		case sync::NetObjEntityType::Door:
-			return std::static_pointer_cast<sync::CDoorSyncTree>(tree)->GetNode<TNode>();
 		case sync::NetObjEntityType::Heli:
 			return std::static_pointer_cast<sync::CHeliSyncTree>(tree)->GetNode<TNode>();
-		case sync::NetObjEntityType::Object:
-			return std::static_pointer_cast<sync::CObjectSyncTree>(tree)->GetNode<TNode>();
-		case sync::NetObjEntityType::Ped:
-			return std::static_pointer_cast<sync::CPedSyncTree>(tree)->GetNode<TNode>();
-		case sync::NetObjEntityType::Pickup:
-			return std::static_pointer_cast<sync::CPickupSyncTree>(tree)->GetNode<TNode>();
-		case sync::NetObjEntityType::PickupPlacement:
-			return std::static_pointer_cast<sync::CPickupPlacementSyncTree>(tree)->GetNode<TNode>();
 		case sync::NetObjEntityType::Plane:
 			return std::static_pointer_cast<sync::CPlaneSyncTree>(tree)->GetNode<TNode>();
 		case sync::NetObjEntityType::Submarine:
 			return std::static_pointer_cast<sync::CSubmarineSyncTree>(tree)->GetNode<TNode>();
-		case sync::NetObjEntityType::Player:
-			return std::static_pointer_cast<sync::CPlayerSyncTree>(tree)->GetNode<TNode>();
 		case sync::NetObjEntityType::Trailer:
-			return std::static_pointer_cast<sync::CAutomobileSyncTree>(tree)->GetNode<TNode>();
+			return std::static_pointer_cast<sync::CTrailerSyncTree>(tree)->GetNode<TNode>();
 		case sync::NetObjEntityType::Train:
 			return std::static_pointer_cast<sync::CTrainSyncTree>(tree)->GetNode<TNode>();
+		default:
+			break;
 	}
 
-	assert(!"Invalid object type!");
-	return static_cast<sync::CAutomobileSyncTree*>(nullptr)->GetNode<TNode>();
+	return std::static_pointer_cast<sync::CAutomobileSyncTree>(tree)->GetNode<TNode>();
+}
+
+inline auto GetEntityScriptInfoNode(sync::NetObjEntityType objectType, const std::shared_ptr<sync::SyncTreeBase>& tree)
+{
+	switch (objectType)
+	{
+		case sync::NetObjEntityType::Automobile:
+			return std::static_pointer_cast<sync::CAutomobileSyncTree>(tree)->GetNode<sync::CEntityScriptInfoDataNode>();
+		case sync::NetObjEntityType::Bike:
+			return std::static_pointer_cast<sync::CBikeSyncTree>(tree)->GetNode<sync::CEntityScriptInfoDataNode>();
+		case sync::NetObjEntityType::Boat:
+			return std::static_pointer_cast<sync::CBoatSyncTree>(tree)->GetNode<sync::CEntityScriptInfoDataNode>();
+		case sync::NetObjEntityType::Door:
+			return std::static_pointer_cast<sync::CDoorSyncTree>(tree)->GetNode<sync::CEntityScriptInfoDataNode>();
+		case sync::NetObjEntityType::Heli:
+			return std::static_pointer_cast<sync::CHeliSyncTree>(tree)->GetNode<sync::CEntityScriptInfoDataNode>();
+		case sync::NetObjEntityType::Object:
+			return std::static_pointer_cast<sync::CObjectSyncTree>(tree)->GetNode<sync::CEntityScriptInfoDataNode>();
+		case sync::NetObjEntityType::Ped:
+			return std::static_pointer_cast<sync::CPedSyncTree>(tree)->GetNode<sync::CEntityScriptInfoDataNode>();
+		case sync::NetObjEntityType::Plane:
+			return std::static_pointer_cast<sync::CPlaneSyncTree>(tree)->GetNode<sync::CEntityScriptInfoDataNode>();
+		case sync::NetObjEntityType::Submarine:
+			return std::static_pointer_cast<sync::CSubmarineSyncTree>(tree)->GetNode<sync::CEntityScriptInfoDataNode>();
+		case sync::NetObjEntityType::Trailer:
+			return std::static_pointer_cast<sync::CTrailerSyncTree>(tree)->GetNode<sync::CEntityScriptInfoDataNode>();
+		case sync::NetObjEntityType::Train:
+			return std::static_pointer_cast<sync::CTrainSyncTree>(tree)->GetNode<sync::CEntityScriptInfoDataNode>();
+		default:
+			break;
+	}
+
+	return std::static_pointer_cast<sync::CAutomobileSyncTree>(tree)->GetNode<sync::CEntityScriptInfoDataNode>();
 }
 
 void DisownEntityScript(const fx::sync::SyncEntityPtr& entity)
@@ -285,7 +310,7 @@ void DisownEntityScript(const fx::sync::SyncEntityPtr& entity)
 
 	if (tree)
 	{
-		auto n = GetNode<sync::CEntityScriptInfoDataNode>(entity->type, tree);
+		auto n = GetEntityScriptInfoNode(entity->type, tree);
 
 		if (n)
 		{
@@ -297,6 +322,488 @@ void DisownEntityScript(const fx::sync::SyncEntityPtr& entity)
 			n->frameIndex = 12;
 			n->timestamp = msec().count();
 		}
+	}
+}
+
+static int GetIntProp(const json& j, const std::initializer_list<const char*>& keys, int defaultVal = -1)
+{
+	for (const char* k : keys)
+	{
+		if (j.contains(k))
+		{
+			const auto& v = j[k];
+			if (v.is_number()) return v.get<int>();
+			if (v.is_string())
+			{
+				try { return std::stoi(v.get<std::string>()); } catch (...) {}
+			}
+		}
+	}
+	return defaultVal;
+}
+
+static float GetFloatProp(const json& j, const std::initializer_list<const char*>& keys, float defaultVal = -1.0f)
+{
+	for (const char* k : keys)
+	{
+		if (j.contains(k))
+		{
+			const auto& v = j[k];
+			if (v.is_number()) return v.get<float>();
+			if (v.is_string())
+			{
+				try { return std::stof(v.get<std::string>()); } catch (...) {}
+			}
+		}
+	}
+	return defaultVal;
+}
+
+static bool ParseColor(const json& j, const std::initializer_list<const char*>& keys, bool& isRGB, int& r, int& g, int& b, int& colorIndex)
+{
+	for (const char* k : keys)
+	{
+		if (!j.contains(k)) continue;
+		const auto& val = j[k];
+		if (val.is_number())
+		{
+			isRGB = false;
+			colorIndex = val.get<int>();
+			return true;
+		}
+		if (val.is_string())
+		{
+			std::string s = val.get<std::string>();
+			if (s.size() >= 7 && s[0] == '#')
+			{
+				try
+				{
+					isRGB = true;
+					r = std::stoi(s.substr(1, 2), nullptr, 16);
+					g = std::stoi(s.substr(3, 2), nullptr, 16);
+					b = std::stoi(s.substr(5, 2), nullptr, 16);
+					return true;
+				}
+				catch (...) {}
+			}
+			try
+			{
+				isRGB = false;
+				colorIndex = std::stoi(s);
+				return true;
+			}
+			catch (...) {}
+		}
+		if (val.is_array() && val.size() >= 3)
+		{
+			isRGB = true;
+			r = val[0].get<int>();
+			g = val[1].get<int>();
+			b = val[2].get<int>();
+			return true;
+		}
+	}
+	return false;
+}
+
+static void ApplyVehicleProperties(sync::NetObjEntityType typeId, const std::shared_ptr<sync::SyncTreeBase>& tree, const json& props)
+{
+	auto nApp = GetVehicleNode<sync::CVehicleAppearanceDataNode>(typeId, tree);
+	if (nApp)
+	{
+		auto& data = nApp->node.data;
+
+		// Plate
+		if (props.contains("plate") && props["plate"].is_string())
+		{
+			std::string plateStr = props["plate"].get<std::string>();
+			data.hasPlate = true;
+			for (int i = 0; i < 8; i++)
+			{
+				data.plate[i] = (i < plateStr.size()) ? plateStr[i] : ' ';
+			}
+		}
+
+		int plateIdx = GetIntProp(props, {"plateIndex", "plate_index", "numberPlateTextIndex"});
+		if (plateIdx >= 0)
+		{
+			data.numberPlateTextIndex = plateIdx;
+		}
+
+		// Primary Color
+		bool isRGB = false; int r = 0, g = 0, b = 0, cIdx = 0;
+		if (ParseColor(props, {"color1", "primaryColor", "primaryColour"}, isRGB, r, g, b, cIdx))
+		{
+			data.isPrimaryColourRGB = isRGB;
+			if (isRGB)
+			{
+				data.primaryRedColour = r;
+				data.primaryGreenColour = g;
+				data.primaryBlueColour = b;
+			}
+			else
+			{
+				data.primaryColour = cIdx;
+			}
+		}
+
+		// Secondary Color
+		if (ParseColor(props, {"color2", "secondaryColor", "secondaryColour"}, isRGB, r, g, b, cIdx))
+		{
+			data.isSecondaryColourRGB = isRGB;
+			if (isRGB)
+			{
+				data.secondaryRedColour = r;
+				data.secondaryGreenColour = g;
+				data.secondaryBlueColour = b;
+			}
+			else
+			{
+				data.secondaryColour = cIdx;
+			}
+		}
+
+		int pearl = GetIntProp(props, {"pearlescentColor", "pearlColor", "pearlColour"});
+		if (pearl >= 0) data.pearlColour = pearl;
+
+		int wheelCol = GetIntProp(props, {"wheelColor", "wheelColour"});
+		if (wheelCol >= 0) data.wheelColour = wheelCol;
+
+		int interiorCol = GetIntProp(props, {"interiorColor", "interiorColour"});
+		if (interiorCol >= 0) data.interiorColour = interiorCol;
+
+		int dashCol = GetIntProp(props, {"dashboardColor", "dashboardColour"});
+		if (dashCol >= 0) data.dashboardColour = dashCol;
+
+		int winTint = GetIntProp(props, {"windowTint", "window_tint", "windowTintIndex"});
+		if (winTint >= 0)
+		{
+			data.hasWindowTint = true;
+			data.windowTintIndex = winTint;
+		}
+
+		float dirt = GetFloatProp(props, {"dirtLevel", "dirt_level"});
+		if (dirt >= 0.0f)
+		{
+			data.hasExtras = true;
+			data.dirtLevel = std::clamp(int(dirt), 0, 15);
+		}
+
+		// Extras
+		if (props.contains("extras"))
+		{
+			data.hasExtras = true;
+			json extrasJson;
+			if (props["extras"].is_string())
+			{
+				try { extrasJson = json::parse(props["extras"].get<std::string>()); } catch (...) {}
+			}
+			else
+			{
+				extrasJson = props["extras"];
+			}
+
+			if (extrasJson.is_number())
+			{
+				data.extras = extrasJson.get<int>();
+			}
+			else if (extrasJson.is_object())
+			{
+				for (auto& [key, val] : extrasJson.items())
+				{
+					try
+					{
+						int extraId = std::stoi(key);
+						bool enabled = val.is_boolean() ? val.get<bool>() : (val.get<int>() != 0);
+						if (extraId >= 0 && extraId < 16)
+						{
+							if (enabled) data.extras |= (1 << extraId);
+							else data.extras &= ~(1 << extraId);
+						}
+					}
+					catch (...) {}
+				}
+			}
+		}
+
+		// Livery
+		int livery = GetIntProp(props, {"livery", "modLivery", "liveryIndex"});
+		if (livery >= 0)
+		{
+			data.hasExtras = true;
+			data.hasCustomLivery = true;
+			data.liveryIndex = livery;
+		}
+
+		int roofLivery = GetIntProp(props, {"roofLivery", "roofLiveryIndex"});
+		if (roofLivery >= 0)
+		{
+			data.hasExtras = true;
+			data.hasCustomRoofLivery = true;
+			data.roofLiveryIndex = roofLivery;
+		}
+
+		// Wheels
+		int wheels = GetIntProp(props, {"wheels", "wheelType", "wheel_type"});
+		if (wheels >= 0) data.wheelType = wheels;
+
+		int wheelChoice = GetIntProp(props, {"wheelChoice", "modFrontWheels"});
+		if (wheelChoice >= 0) data.wheelChoice = wheelChoice;
+
+		int rearWheelChoice = GetIntProp(props, {"rearWheelChoice", "modBackWheels"});
+		if (rearWheelChoice >= 0)
+		{
+			data.hasDifferentRearWheel = true;
+			data.rearWheelChoice = rearWheelChoice;
+		}
+
+		if (props.contains("customTires") || props.contains("modCustomTiresF"))
+		{
+			bool ct = props.contains("customTires") ? (props["customTires"].is_boolean() ? props["customTires"].get<bool>() : (props["customTires"].get<int>() != 0))
+													: (props["modCustomTiresF"].is_boolean() ? props["modCustomTiresF"].get<bool>() : (props["modCustomTiresF"].get<int>() != 0));
+			data.hasCustomTires = ct;
+		}
+
+		// Mod Kit & Tuning Mods
+		int modKit = GetIntProp(props, {"modKit", "kitIndex"}, 1);
+		data.kitIndex = (modKit >= 0) ? modKit : 1;
+
+		if (props.contains("mods"))
+		{
+			data.hasMod = true;
+			const auto& modsVal = props["mods"];
+			if (modsVal.is_object())
+			{
+				for (auto& [key, val] : modsVal.items())
+				{
+					try
+					{
+						int slot = std::stoi(key);
+						int v = val.get<int>();
+						if (slot >= 0 && slot < 13)
+						{
+							data.kitMods[slot] = v + 1;
+						}
+					}
+					catch (...) {}
+				}
+			}
+			else if (modsVal.is_array())
+			{
+				for (size_t i = 0; i < modsVal.size() && i < 13; i++)
+				{
+					if (modsVal[i].is_number())
+					{
+						data.kitMods[i] = modsVal[i].get<int>() + 1;
+					}
+				}
+			}
+		}
+
+		// Named mods mapping
+		static const std::unordered_map<std::string, int> namedModSlots = {
+			{"modSpoilers", 0}, {"modFrontBumper", 1}, {"modRearBumper", 2},
+			{"modSideSkirt", 3}, {"modExhaust", 4}, {"modFrame", 5},
+			{"modGrille", 6}, {"modHood", 7}, {"modFender", 8},
+			{"modRightFender", 9}, {"modRoof", 10}, {"modEngine", 11},
+			{"modBrakes", 12}
+		};
+		for (const auto& [name, slot] : namedModSlots)
+		{
+			if (props.contains(name) && props[name].is_number())
+			{
+				data.hasMod = true;
+				data.kitMods[slot] = props[name].get<int>() + 1;
+			}
+		}
+
+		// Neons
+		if (props.contains("neonEnabled"))
+		{
+			json neonObj;
+			if (props["neonEnabled"].is_string())
+			{
+				try { neonObj = json::parse(props["neonEnabled"].get<std::string>()); } catch (...) {}
+			}
+			else
+			{
+				neonObj = props["neonEnabled"];
+			}
+
+			if (neonObj.is_array() && neonObj.size() >= 4)
+			{
+				data.hasNeonLights = true;
+				data.neonLeftOn = neonObj[0].is_boolean() ? neonObj[0].get<bool>() : (neonObj[0].get<int>() != 0);
+				data.neonRightOn = neonObj[1].is_boolean() ? neonObj[1].get<bool>() : (neonObj[1].get<int>() != 0);
+				data.neonFrontOn = neonObj[2].is_boolean() ? neonObj[2].get<bool>() : (neonObj[2].get<int>() != 0);
+				data.neonBackOn = neonObj[3].is_boolean() ? neonObj[3].get<bool>() : (neonObj[3].get<int>() != 0);
+			}
+		}
+
+		if (props.contains("neonColor"))
+		{
+			json ncObj;
+			if (props["neonColor"].is_string())
+			{
+				try { ncObj = json::parse(props["neonColor"].get<std::string>()); } catch (...) {}
+			}
+			else
+			{
+				ncObj = props["neonColor"];
+			}
+
+			if (ncObj.is_array() && ncObj.size() >= 3)
+			{
+				data.hasNeonLights = true;
+				data.neonRedColour = ncObj[0].get<int>();
+				data.neonGreenColour = ncObj[1].get<int>();
+				data.neonBlueColour = ncObj[2].get<int>();
+			}
+		}
+
+		// Tyre smoke
+		if (props.contains("tyreSmokeColor"))
+		{
+			json tsObj;
+			if (props["tyreSmokeColor"].is_string())
+			{
+				try { tsObj = json::parse(props["tyreSmokeColor"].get<std::string>()); } catch (...) {}
+			}
+			else
+			{
+				tsObj = props["tyreSmokeColor"];
+			}
+
+			if (tsObj.is_array() && tsObj.size() >= 3)
+			{
+				data.hasTyreSmokeColours = true;
+				data.tyreSmokeRedColour = tsObj[0].get<int>();
+				data.tyreSmokeGreenColour = tsObj[1].get<int>();
+				data.tyreSmokeBlueColour = tsObj[2].get<int>();
+			}
+		}
+
+		UnparseTo(nApp->node, nApp);
+		nApp->frameIndex = 12;
+		nApp->timestamp = msec().count();
+	}
+
+	// Creation Data
+	auto nCreation = GetVehicleNode<sync::CVehicleCreationDataNode>(typeId, tree);
+	if (nCreation)
+	{
+		if (props.contains("bulletProofTyres") && props["bulletProofTyres"].is_boolean())
+		{
+			nCreation->node.m_tyresDontBurst = props["bulletProofTyres"].get<bool>();
+			UnparseTo(nCreation->node, nCreation);
+			nCreation->frameIndex = 12;
+			nCreation->timestamp = msec().count();
+		}
+	}
+}
+
+static void ApplyVehicleEntityProperties(const fx::sync::SyncEntityPtr& entity, const json& props, float x, float y, float z)
+{
+	if (!entity) return;
+
+	// Plate authoritative
+	if (props.contains("plate") && props["plate"].is_string())
+	{
+		std::string plateStr = props["plate"].get<std::string>();
+		entity->plateAuthoritative = true;
+		strncpy(entity->authoritativePlate, plateStr.c_str(), sizeof(entity->authoritativePlate) - 1);
+		entity->authoritativePlate[sizeof(entity->authoritativePlate) - 1] = '\0';
+	}
+
+	// Doors / Lock status
+	int lockStatus = GetIntProp(props, {"lockStatus", "door_status", "doorsLocked"});
+	if (lockStatus > 0)
+	{
+		entity->doorsServerAuthoritative = true;
+		entity->authoritativeLockStatus = lockStatus;
+	}
+
+	// Engine health authoritative
+	float engHealth = GetFloatProp(props, {"engineHealth", "health_engine", "healthEngine"});
+	if (engHealth >= 0.0f)
+	{
+		entity->engineHealthAuthoritative = true;
+		entity->authoritativeEngineHealth = engHealth;
+	}
+
+	// Orphan mode (defaults to KeepEntity for server setters unless specified)
+	int orphan = GetIntProp(props, {"orphanMode", "orphan_mode"}, (int)sync::EntityOrphanMode::KeepEntity);
+	if (orphan >= 0)
+	{
+		entity->orphanMode = (sync::EntityOrphanMode)orphan;
+	}
+
+	// Frozen
+	if (props.contains("frozen") && (props["frozen"].is_boolean() ? props["frozen"].get<bool>() : (props["frozen"].get<int>() != 0)))
+	{
+		entity->isFrozen = true;
+		entity->frozenCoords[0] = x;
+		entity->frozenCoords[1] = y;
+		entity->frozenCoords[2] = z;
+	}
+}
+
+static void ApplyPedProperties(const std::shared_ptr<sync::SyncTreeBase>& tree, const json& props)
+{
+	auto nCreation = std::static_pointer_cast<sync::CPedSyncTree>(tree)->GetNode<sync::CPedCreationDataNode>();
+	if (nCreation)
+	{
+		int maxHp = GetIntProp(props, {"maxHealth", "max_health"});
+		if (maxHp > 0)
+		{
+			nCreation->node.maxHealth = maxHp;
+			UnparseTo(nCreation->node, nCreation);
+			nCreation->frameIndex = 12;
+			nCreation->timestamp = msec().count();
+		}
+	}
+}
+
+static void ApplyPedEntityProperties(const fx::sync::SyncEntityPtr& entity, const json& props, float x, float y, float z)
+{
+	if (!entity) return;
+
+	int orphan = GetIntProp(props, {"orphanMode", "orphan_mode"}, (int)sync::EntityOrphanMode::KeepEntity);
+	if (orphan >= 0)
+	{
+		entity->orphanMode = (sync::EntityOrphanMode)orphan;
+	}
+
+	if (props.contains("frozen") && (props["frozen"].is_boolean() ? props["frozen"].get<bool>() : (props["frozen"].get<int>() != 0)))
+	{
+		entity->isFrozen = true;
+		entity->frozenCoords[0] = x;
+		entity->frozenCoords[1] = y;
+		entity->frozenCoords[2] = z;
+	}
+
+	if (props.contains("invincible") && (props["invincible"].is_boolean() ? props["invincible"].get<bool>() : (props["invincible"].get<int>() != 0)))
+	{
+		entity->isInvincible = true;
+	}
+}
+
+static void ApplyObjectEntityProperties(const fx::sync::SyncEntityPtr& entity, const json& props, float x, float y, float z)
+{
+	if (!entity) return;
+
+	int orphan = GetIntProp(props, {"orphanMode", "orphan_mode"}, (int)sync::EntityOrphanMode::KeepEntity);
+	if (orphan >= 0)
+	{
+		entity->orphanMode = (sync::EntityOrphanMode)orphan;
+	}
+
+	if (props.contains("frozen") && (props["frozen"].is_boolean() ? props["frozen"].get<bool>() : (props["frozen"].get<int>() != 0)))
+	{
+		entity->isFrozen = true;
+		entity->frozenCoords[0] = x;
+		entity->frozenCoords[1] = y;
+		entity->frozenCoords[2] = z;
 	}
 }
 
@@ -430,8 +937,36 @@ static InitFunction initFunction([]()
 					break;
 			}
 
+			const char* jsonStr = nullptr;
+			if (ctx.GetArgumentCount() > 6)
+			{
+				jsonStr = ctx.GetArgument<const char*>(6);
+			}
+
+			json props;
+			if (jsonStr && jsonStr[0] != '\0')
+			{
+				try
+				{
+					props = json::parse(jsonStr);
+				}
+				catch (...)
+				{
+				}
+			}
+
+			if (!props.is_null() && !props.empty())
+			{
+				ApplyVehicleProperties(typeId, tree, props);
+			}
+
 			auto sgs = ref->GetComponent<fx::ServerGameState>();
 			auto entity = sgs->CreateEntityFromTree(typeId, tree);
+
+			if (entity && !props.is_null() && !props.empty())
+			{
+				ApplyVehicleEntityProperties(entity, props, x, y, z);
+			}
 
 			uint32_t guid = 0;
 
@@ -523,14 +1058,19 @@ static InitFunction initFunction([]()
 
 			uint32_t model = 0;
 			float x = 0.0f, y = 0.0f, z = 0.0f, heading = 0.0f;
+			const char* jsonStr = nullptr;
 
-			if (ctx.GetArgumentCount() >= 6)
+			if (ctx.GetArgumentCount() >= 6 && ctx.GetArgument<uint32_t>(1) != 0 && ctx.GetArgument<float>(2) != 0.0f)
 			{
 				model = ctx.GetArgument<uint32_t>(1);
 				x = ctx.GetArgument<float>(2);
 				y = ctx.GetArgument<float>(3);
 				z = ctx.GetArgument<float>(4);
 				heading = ctx.GetArgument<float>(5);
+				if (ctx.GetArgumentCount() > 6)
+				{
+					jsonStr = ctx.GetArgument<const char*>(6);
+				}
 			}
 			else
 			{
@@ -539,12 +1079,32 @@ static InitFunction initFunction([]()
 				y = ctx.GetArgument<float>(2);
 				z = ctx.GetArgument<float>(3);
 				heading = (ctx.GetArgumentCount() > 4) ? ctx.GetArgument<float>(4) : 0.0f;
+				if (ctx.GetArgumentCount() > 5)
+				{
+					jsonStr = ctx.GetArgument<const char*>(5);
+				}
 			}
 
 			auto tree = MakePed(model, x, y, z, resourceHash, heading);
 
+			json props;
+			if (jsonStr && jsonStr[0] != '\0')
+			{
+				try { props = json::parse(jsonStr); } catch (...) {}
+			}
+
+			if (!props.is_null() && !props.empty())
+			{
+				ApplyPedProperties(tree, props);
+			}
+
 			auto sgs = ref->GetComponent<fx::ServerGameState>();
 			auto entity = sgs->CreateEntityFromTree(sync::NetObjEntityType::Ped, tree);
+
+			if (entity && !props.is_null() && !props.empty())
+			{
+				ApplyPedEntityProperties(entity, props, x, y, z);
+			}
 
 			uint32_t guid = 0;
 
@@ -578,11 +1138,23 @@ static InitFunction initFunction([]()
 			float z = ctx.GetArgument<float>(3);
 			float heading = (ctx.GetArgumentCount() > 4) ? ctx.GetArgument<float>(4) : 0.0f;
 			bool dynamic = (ctx.GetArgumentCount() > 5) ? ctx.GetArgument<bool>(5) : false;
+			const char* jsonStr = (ctx.GetArgumentCount() > 6) ? ctx.GetArgument<const char*>(6) : nullptr;
 
 			auto tree = MakeObject(model, x, y, z, resourceHash, dynamic, heading);
 
+			json props;
+			if (jsonStr && jsonStr[0] != '\0')
+			{
+				try { props = json::parse(jsonStr); } catch (...) {}
+			}
+
 			auto sgs = ref->GetComponent<fx::ServerGameState>();
 			auto entity = sgs->CreateEntityFromTree(sync::NetObjEntityType::Object, tree);
+
+			if (entity && !props.is_null() && !props.empty())
+			{
+				ApplyObjectEntityProperties(entity, props, x, y, z);
+			}
 
 			uint32_t guid = 0;
 

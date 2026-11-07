@@ -1,5 +1,9 @@
 #pragma once
 
+#ifdef __clang__
+#pragma clang diagnostic ignored "-Winvalid-offsetof"
+#endif
+
 namespace fx::sync
 {
 template<int Id1, int Id2, int Id3, bool CanSendOnFirst = true>
@@ -540,7 +544,16 @@ struct UnparseSerializer
 	template<typename T>
 	bool Serialize(int size, T& data)
 	{
-		state->buffer.Write<T>(size, data);
+		if constexpr (std::is_floating_point_v<T>)
+		{
+			uint32_t val = 0;
+			memcpy(&val, &data, sizeof(T));
+			state->buffer.Write<uint32_t>(size, val);
+		}
+		else
+		{
+			state->buffer.Write<T>(size, data);
+		}
 		return true;
 	}
 
