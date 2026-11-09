@@ -2066,27 +2066,86 @@ static void Init()
 		return true;
 	}));
 
-	fx::ScriptEngine::RegisterNativeHandler("SET_PLAYER_HIDDEN_FROM_OTHERS", MakeClientFunction([](fx::ScriptContext& context, const fx::ClientSharedPtr& client)
+	auto setHiddenHandler = [](fx::ScriptContext& context)
 	{
-		if (context.GetArgumentCount() > 1)
+		uint32_t netId = 0;
+		if (context.GetArgumentCount() > 0)
 		{
-			bool hidden = context.GetArgument<bool>(1);
-			auto resourceManager = fx::ResourceManager::GetCurrent();
-			auto instance = resourceManager->GetComponent<fx::ServerInstanceBaseRef>()->Get();
-			auto gameState = instance->GetComponent<fx::ServerGameState>();
-			gameState->SetPlayerHiddenFromOthers(client->GetNetId(), hidden);
+			uintptr_t rawId = context.GetArgument<uintptr_t>(0);
+			if (rawId < 0x10000)
+			{
+				netId = static_cast<uint32_t>(rawId);
+			}
+			else
+			{
+				const char* id = reinterpret_cast<const char*>(rawId);
+				if (id)
+				{
+					netId = atoi(id);
+				}
+			}
 		}
 
-		return true;
-	}));
+		bool toggle = false;
+		if (context.GetArgumentCount() > 1)
+		{
+			toggle = context.GetArgument<bool>(1);
+		}
 
-	fx::ScriptEngine::RegisterNativeHandler("IS_PLAYER_HIDDEN_FROM_OTHERS", MakeClientFunction([](fx::ScriptContext& context, const fx::ClientSharedPtr& client)
-	{
 		auto resourceManager = fx::ResourceManager::GetCurrent();
 		auto instance = resourceManager->GetComponent<fx::ServerInstanceBaseRef>()->Get();
 		auto gameState = instance->GetComponent<fx::ServerGameState>();
-		return gameState->IsPlayerHiddenFromOthers(client->GetNetId());
-	}, false));
+
+		if (gameState && netId != 0)
+		{
+			gameState->SetPlayerHiddenFromOthers(netId, toggle);
+		}
+
+		context.SetResult(true);
+	};
+
+	fx::ScriptEngine::RegisterNativeHandler("SET_PLAYER_HIDDEN_FROM_OTHERS", setHiddenHandler);
+	fx::ScriptEngine::RegisterNativeHandler(0xeb1d1bc, setHiddenHandler);
+	fx::ScriptEngine::RegisterNativeHandler(0x2bfdd1e2, setHiddenHandler);
+	fx::ScriptEngine::RegisterNativeHandler(0x9052287c, setHiddenHandler);
+
+	auto isHiddenHandler = [](fx::ScriptContext& context)
+	{
+		uint32_t netId = 0;
+		if (context.GetArgumentCount() > 0)
+		{
+			uintptr_t rawId = context.GetArgument<uintptr_t>(0);
+			if (rawId < 0x10000)
+			{
+				netId = static_cast<uint32_t>(rawId);
+			}
+			else
+			{
+				const char* id = reinterpret_cast<const char*>(rawId);
+				if (id)
+				{
+					netId = atoi(id);
+				}
+			}
+		}
+
+		auto resourceManager = fx::ResourceManager::GetCurrent();
+		auto instance = resourceManager->GetComponent<fx::ServerInstanceBaseRef>()->Get();
+		auto gameState = instance->GetComponent<fx::ServerGameState>();
+
+		bool hidden = false;
+		if (gameState && netId != 0)
+		{
+			hidden = gameState->IsPlayerHiddenFromOthers(netId);
+		}
+
+		context.SetResult(hidden);
+	};
+
+	fx::ScriptEngine::RegisterNativeHandler("IS_PLAYER_HIDDEN_FROM_OTHERS", isHiddenHandler);
+	fx::ScriptEngine::RegisterNativeHandler(0xaa7b4527, isHiddenHandler);
+	fx::ScriptEngine::RegisterNativeHandler(0xbff69f82, isHiddenHandler);
+	fx::ScriptEngine::RegisterNativeHandler(0xae7d56ae, isHiddenHandler);
 
 	fx::ScriptEngine::RegisterNativeHandler("SET_VEHICLE_DOORS_SERVER_AUTHORITATIVE", makeEntityFunction([](fx::ScriptContext& context, const fx::sync::SyncEntityPtr& entity)
 	{

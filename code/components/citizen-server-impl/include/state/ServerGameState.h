@@ -1142,9 +1142,9 @@ struct SyncUnparseState
 	uint64_t lastFrameIndex;
 	uint32_t targetSlotId;
 	bool isFirstUpdate;
-
+	bool overridePosition = false;
 	SyncUnparseState(rl::MessageBuffer& buffer)
-		: buffer(buffer), lastFrameIndex(0)
+		: buffer(buffer), lastFrameIndex(0), overridePosition(false)
 	{
 	}
 };
@@ -1582,6 +1582,7 @@ public:
 
 	void SetPlayerHiddenFromOthers(uint32_t netId, bool hidden);
 	bool IsPlayerHiddenFromOthers(uint32_t netId) const;
+	bool IsEntityHiddenFromClient(const fx::sync::SyncEntityPtr& entity, const fx::ClientSharedPtr& client) const;
 
 	void SetPlayerFrozen(uint32_t netId, bool frozen);
 	bool IsPlayerFrozen(uint32_t netId) const;

@@ -44,7 +44,8 @@ void SetupNode(const std::shared_ptr<TTree>& tree, TFn fn)
 
 	UnparseTo(n->node, n);
 
-	n->frameIndex = 12;
+	n->frameIndex = UINT64_MAX;
+		n->ackedPlayers.reset();
 	n->timestamp = msec().count();
 }
 
@@ -319,7 +320,8 @@ void DisownEntityScript(const fx::sync::SyncEntityPtr& entity)
 			cdn.m_timestamp = msec().count();
 			UnparseTo(cdn, n);
 
-			n->frameIndex = 12;
+			n->frameIndex = UINT64_MAX;
+		n->ackedPlayers.reset();
 			n->timestamp = msec().count();
 		}
 	}
@@ -408,20 +410,45 @@ static bool ParseColor(const json& j, const std::initializer_list<const char*>& 
 
 static void ApplyVehicleProperties(sync::NetObjEntityType typeId, const std::shared_ptr<sync::SyncTreeBase>& tree, const json& props)
 {
+	int lockStatus = GetIntProp(props, {"lockStatus", "door_status", "doorsLocked"});
+	if (lockStatus >= 0 && tree)
+	{
+		if (auto vgs = tree->GetVehicleGameState())
+		{
+			vgs->lockStatus = lockStatus;
+		}
+
+
+	}
+
 	auto nApp = GetVehicleNode<sync::CVehicleAppearanceDataNode>(typeId, tree);
 	if (nApp)
 	{
 		auto& data = nApp->node.data;
 
 		// Plate
+		std::string plateStr;
 		if (props.contains("plate") && props["plate"].is_string())
 		{
-			std::string plateStr = props["plate"].get<std::string>();
+			plateStr = props["plate"].get<std::string>();
+		}
+		else if (props.contains("plateText") && props["plateText"].is_string())
+		{
+			plateStr = props["plateText"].get<std::string>();
+		}
+		else if (props.contains("numberPlateText") && props["numberPlateText"].is_string())
+		{
+			plateStr = props["numberPlateText"].get<std::string>();
+		}
+
+		if (!plateStr.empty())
+		{
 			data.hasPlate = true;
 			for (int i = 0; i < 8; i++)
 			{
 				data.plate[i] = (i < plateStr.size()) ? plateStr[i] : ' ';
 			}
+			data.plate[8] = '\0';
 		}
 
 		int plateIdx = GetIntProp(props, {"plateIndex", "plate_index", "numberPlateTextIndex"});
@@ -463,16 +490,16 @@ static void ApplyVehicleProperties(sync::NetObjEntityType typeId, const std::sha
 			}
 		}
 
-		int pearl = GetIntProp(props, {"pearlescentColor", "pearlColor", "pearlColour"});
+		int pearl = GetIntProp(props, {"pearlescentColor", "pearlColor", "pearlColour", "pearlescent_color"});
 		if (pearl >= 0) data.pearlColour = pearl;
 
-		int wheelCol = GetIntProp(props, {"wheelColor", "wheelColour"});
+		int wheelCol = GetIntProp(props, {"wheelColor", "wheelColour", "wheel_color"});
 		if (wheelCol >= 0) data.wheelColour = wheelCol;
 
-		int interiorCol = GetIntProp(props, {"interiorColor", "interiorColour"});
+		int interiorCol = GetIntProp(props, {"interiorColor", "interiorColour", "interior_color"});
 		if (interiorCol >= 0) data.interiorColour = interiorCol;
 
-		int dashCol = GetIntProp(props, {"dashboardColor", "dashboardColour"});
+		int dashCol = GetIntProp(props, {"dashboardColor", "dashboardColour", "dashboard_color"});
 		if (dashCol >= 0) data.dashboardColour = dashCol;
 
 		int winTint = GetIntProp(props, {"windowTint", "window_tint", "windowTintIndex"});
@@ -567,7 +594,7 @@ static void ApplyVehicleProperties(sync::NetObjEntityType typeId, const std::sha
 		// Mod Kit & Tuning Mods
 		// In GTA V network sync, kitIndex 0 means "no mod kit installed".
 		// Lua modKit 0 corresponds to network kitIndex 1.
-		int modKit = GetIntProp(props, {"modKit", "kitIndex"}, -1);
+		int modKit = GetIntProp(props, {"modKit", "kitIndex", "mod_kit"}, -1);
 		if (modKit >= 0)
 		{
 			data.kitIndex = (modKit == 0) ? 1 : std::clamp(modKit, 1, 3);
@@ -576,6 +603,19 @@ static void ApplyVehicleProperties(sync::NetObjEntityType typeId, const std::sha
 		{
 			data.kitIndex = 1;
 		}
+		data.hasMod = true;
+
+		auto parseToggle = [](const json& val) -> bool
+		{
+			if (val.is_boolean()) return val.get<bool>();
+			if (val.is_number()) return val.get<int>() != 0;
+			if (val.is_string())
+			{
+				std::string s = val.get<std::string>();
+				return (s == "1" || s == "true" || s == "ON" || s == "on" || s == "True");
+			}
+			return false;
+		};
 
 		if (props.contains("mods"))
 		{
@@ -587,11 +627,11 @@ static void ApplyVehicleProperties(sync::NetObjEntityType typeId, const std::sha
 					try
 					{
 						int slot = std::stoi(key);
-						if (val.is_number())
+						if (slot >= 0 && slot < 32)
 						{
-							int v = val.get<int>();
-							if (slot >= 0 && slot < 13)
+							if (val.is_number())
 							{
+								int v = val.get<int>();
 								if (v >= 0)
 								{
 									data.hasMod = true;
@@ -602,6 +642,12 @@ static void ApplyVehicleProperties(sync::NetObjEntityType typeId, const std::sha
 									data.kitMods[slot] = 0;
 								}
 							}
+							else if (slot >= 17 && slot <= 22)
+							{
+								data.hasToggleMods = true;
+								if (parseToggle(val)) data.toggleMods |= (1 << (slot - 17));
+								else data.toggleMods &= ~(1 << (slot - 17));
+							}
 						}
 					}
 					catch (...) {}
@@ -609,7 +655,7 @@ static void ApplyVehicleProperties(sync::NetObjEntityType typeId, const std::sha
 			}
 			else if (modsVal.is_array())
 			{
-				for (size_t i = 0; i < modsVal.size() && i < 13; i++)
+				for (size_t i = 0; i < modsVal.size() && i < 32; i++)
 				{
 					if (modsVal[i].is_number())
 					{
@@ -624,6 +670,12 @@ static void ApplyVehicleProperties(sync::NetObjEntityType typeId, const std::sha
 							data.kitMods[i] = 0;
 						}
 					}
+					else if (i >= 17 && i <= 22)
+					{
+						data.hasToggleMods = true;
+						if (parseToggle(modsVal[i])) data.toggleMods |= (1 << (i - 17));
+						else data.toggleMods &= ~(1 << (i - 17));
+					}
 				}
 			}
 		}
@@ -634,22 +686,130 @@ static void ApplyVehicleProperties(sync::NetObjEntityType typeId, const std::sha
 			{"modSideSkirt", 3}, {"modExhaust", 4}, {"modFrame", 5},
 			{"modGrille", 6}, {"modHood", 7}, {"modFender", 8},
 			{"modRightFender", 9}, {"modRoof", 10}, {"modEngine", 11},
-			{"modBrakes", 12}
+			{"modBrakes", 12}, {"modTransmission", 13}, {"modHorns", 14},
+			{"modSuspension", 15}, {"modArmor", 16},
+			{"modFrontWheels", 23}, {"modBackWheels", 24}, {"modPlateHolder", 25},
+			{"modVanityPlate", 26}, {"modTrimA", 27}, {"modOrnaments", 28},
+			{"modDashboard", 29}, {"modDial", 30}, {"modDoorSpeaker", 31},
+			{"modSeats", 32}, {"modSteeringWheel", 33}, {"modShifterLevers", 34},
+			{"modAPlate", 35}, {"modSpeakers", 36}, {"modTrunk", 37},
+			{"modHydrolic", 38}, {"modEngineBlock", 39}, {"modAirFilter", 40},
+			{"modStruts", 41}, {"modArchCover", 42}, {"modAerials", 43},
+			{"modTrimB", 44}, {"modTank", 45}, {"modWindows", 46},
+			{"modLivery", 48},
+			// snake_case aliases
+			{"mod_spoilers", 0}, {"mod_front_bumper", 1}, {"mod_rear_bumper", 2},
+			{"mod_side_skirt", 3}, {"mod_exhaust", 4}, {"mod_frame", 5},
+			{"mod_grille", 6}, {"mod_hood", 7}, {"mod_fender", 8},
+			{"mod_right_fender", 9}, {"mod_roof", 10}, {"mod_engine", 11},
+			{"mod_brakes", 12}, {"mod_transmission", 13}, {"mod_horns", 14},
+			{"mod_suspension", 15}, {"mod_armor", 16}
 		};
 		for (const auto& [name, slot] : namedModSlots)
 		{
 			if (props.contains(name) && props[name].is_number())
 			{
 				int v = props[name].get<int>();
-				if (v >= 0)
+				if (slot >= 0 && slot < 32)
 				{
-					data.hasMod = true;
-					data.kitMods[slot] = v + 1;
+					if (v >= 0)
+					{
+						data.hasMod = true;
+						data.kitMods[slot] = v + 1;
+					}
+					else
+					{
+						data.kitMods[slot] = 0;
+					}
 				}
-				else
+			}
+		}
+
+		// Toggle mods (Nitrous = 17 (bit 0), Turbo = 18 (bit 1), Subwoofer = 19 (bit 2), TyreSmoke = 20 (bit 3), Hydraulics = 21 (bit 4), Xenon = 22 (bit 5))
+		if (props.contains("modTurbo") || props.contains("turbo") || props.contains("mod_turbo"))
+		{
+			const auto& tv = props.contains("modTurbo") ? props["modTurbo"]
+				: (props.contains("turbo") ? props["turbo"] : props["mod_turbo"]);
+			bool on = parseToggle(tv);
+			data.hasToggleMods = true;
+			if (on) data.toggleMods |= (1 << 1);
+			else data.toggleMods &= ~(1 << 1);
+		}
+
+		if (props.contains("modXenon") || props.contains("xenon") || props.contains("modXenonLights") || props.contains("mod_xenon"))
+		{
+			const auto& xv = props.contains("modXenon") ? props["modXenon"]
+				: (props.contains("xenon") ? props["xenon"]
+				: (props.contains("modXenonLights") ? props["modXenonLights"] : props["mod_xenon"]));
+			bool on = parseToggle(xv);
+			data.hasToggleMods = true;
+			if (on) data.toggleMods |= (1 << 5);
+			else data.toggleMods &= ~(1 << 5);
+		}
+
+		if (props.contains("modNitrous") || props.contains("nitrous") || props.contains("mod_nitrous"))
+		{
+			const auto& nv = props.contains("modNitrous") ? props["modNitrous"]
+				: (props.contains("nitrous") ? props["nitrous"] : props["mod_nitrous"]);
+			bool on = parseToggle(nv);
+			data.hasToggleMods = true;
+			if (on) data.toggleMods |= (1 << 0);
+			else data.toggleMods &= ~(1 << 0);
+		}
+
+		if (props.contains("modSubwoofer") || props.contains("subwoofer") || props.contains("mod_subwoofer"))
+		{
+			const auto& sv = props.contains("modSubwoofer") ? props["modSubwoofer"]
+				: (props.contains("subwoofer") ? props["subwoofer"] : props["mod_subwoofer"]);
+			bool on = parseToggle(sv);
+			data.hasToggleMods = true;
+			if (on) data.toggleMods |= (1 << 2);
+			else data.toggleMods &= ~(1 << 2);
+		}
+
+		if (props.contains("modTyreSmoke") || props.contains("modSmokeEnabled") || props.contains("tyreSmoke") || props.contains("mod_smoke_enabled"))
+		{
+			const auto& smv = props.contains("modSmokeEnabled") ? props["modSmokeEnabled"]
+				: (props.contains("modTyreSmoke") ? props["modTyreSmoke"]
+				: (props.contains("tyreSmoke") ? props["tyreSmoke"] : props["mod_smoke_enabled"]));
+			bool on = parseToggle(smv);
+			data.hasToggleMods = true;
+			if (on) data.toggleMods |= (1 << 3);
+			else data.toggleMods &= ~(1 << 3);
+		}
+
+		if (props.contains("modHydraulics") || props.contains("hydraulics") || props.contains("mod_hydraulics"))
+		{
+			const auto& hv = props.contains("modHydraulics") ? props["modHydraulics"]
+				: (props.contains("hydraulics") ? props["hydraulics"] : props["mod_hydraulics"]);
+			bool on = parseToggle(hv);
+			data.hasToggleMods = true;
+			if (on) data.toggleMods |= (1 << 4);
+			else data.toggleMods &= ~(1 << 4);
+		}
+
+		if (props.contains("toggleMods"))
+		{
+			const auto& tm = props["toggleMods"];
+			if (tm.is_array())
+			{
+				data.hasToggleMods = true;
+				for (size_t i = 0; i < tm.size() && i < 6; i++)
 				{
-					data.kitMods[slot] = 0;
+					if (parseToggle(tm[i]))
+					{
+						data.toggleMods |= (1 << i);
+					}
+					else
+					{
+						data.toggleMods &= ~(1 << i);
+					}
 				}
+			}
+			else if (tm.is_number())
+			{
+				data.hasToggleMods = true;
+				data.toggleMods = tm.get<int>();
 			}
 		}
 
@@ -720,7 +880,8 @@ static void ApplyVehicleProperties(sync::NetObjEntityType typeId, const std::sha
 		}
 
 		UnparseTo(nApp->node, nApp);
-		nApp->frameIndex = 12;
+		nApp->frameIndex = UINT64_MAX;
+		nApp->ackedPlayers.reset();
 		nApp->timestamp = msec().count();
 	}
 
@@ -732,7 +893,8 @@ static void ApplyVehicleProperties(sync::NetObjEntityType typeId, const std::sha
 		{
 			nCreation->node.m_tyresDontBurst = props["bulletProofTyres"].get<bool>();
 			UnparseTo(nCreation->node, nCreation);
-			nCreation->frameIndex = 12;
+			nCreation->frameIndex = UINT64_MAX;
+			nCreation->ackedPlayers.reset();
 			nCreation->timestamp = msec().count();
 		}
 	}
@@ -743,20 +905,53 @@ static void ApplyVehicleEntityProperties(const fx::sync::SyncEntityPtr& entity, 
 	if (!entity) return;
 
 	// Plate authoritative
+	std::string plateStr;
 	if (props.contains("plate") && props["plate"].is_string())
 	{
-		std::string plateStr = props["plate"].get<std::string>();
+		plateStr = props["plate"].get<std::string>();
+	}
+	else if (props.contains("plateText") && props["plateText"].is_string())
+	{
+		plateStr = props["plateText"].get<std::string>();
+	}
+	else if (props.contains("numberPlateText") && props["numberPlateText"].is_string())
+	{
+		plateStr = props["numberPlateText"].get<std::string>();
+	}
+
+	if (!plateStr.empty())
+	{
 		entity->plateAuthoritative = true;
-		strncpy(entity->authoritativePlate, plateStr.c_str(), sizeof(entity->authoritativePlate) - 1);
-		entity->authoritativePlate[sizeof(entity->authoritativePlate) - 1] = '\0';
+		memset(entity->authoritativePlate, ' ', 8);
+		size_t len = plateStr.size();
+		if (len > 8) len = 8;
+		memcpy(entity->authoritativePlate, plateStr.c_str(), len);
+		entity->authoritativePlate[8] = '\0';
+
+		if (entity->syncTree)
+		{
+			if (auto va = entity->syncTree->GetVehicleAppearance())
+			{
+				va->hasPlate = true;
+				memcpy(va->plate, entity->authoritativePlate, 8);
+				va->plate[8] = '\0';
+			}
+		}
 	}
 
 	// Doors / Lock status
 	int lockStatus = GetIntProp(props, {"lockStatus", "door_status", "doorsLocked"});
-	if (lockStatus > 0)
+	if (lockStatus >= 0)
 	{
 		entity->doorsServerAuthoritative = true;
 		entity->authoritativeLockStatus = lockStatus;
+		if (entity->syncTree)
+		{
+			if (auto vgs = entity->syncTree->GetVehicleGameState())
+			{
+				vgs->lockStatus = lockStatus;
+			}
+		}
 	}
 
 	// Engine health authoritative
@@ -794,7 +989,8 @@ static void ApplyPedProperties(const std::shared_ptr<sync::SyncTreeBase>& tree, 
 		{
 			nCreation->node.maxHealth = maxHp;
 			UnparseTo(nCreation->node, nCreation);
-			nCreation->frameIndex = 12;
+			nCreation->frameIndex = UINT64_MAX;
+			nCreation->ackedPlayers.reset();
 			nCreation->timestamp = msec().count();
 		}
 	}
@@ -883,7 +1079,7 @@ static InitFunction initFunction([]()
 			ctx.SetResult(guid);
 		});
 
-		fx::ScriptEngine::RegisterNativeHandler("CREATE_VEHICLE_SERVER_SETTER", [ref](fx::ScriptContext& ctx)
+		auto createVehSetterHandler = [ref](fx::ScriptContext& ctx)
 		{
 			uint32_t modelHash = ctx.GetArgument<uint32_t>(0);
 			std::string_view type = ctx.CheckArgument<const char*>(1);
@@ -1012,7 +1208,11 @@ static InitFunction initFunction([]()
 			}
 
 			ctx.SetResult(guid);
-		});
+		};
+
+		fx::ScriptEngine::RegisterNativeHandler("CREATE_VEHICLE_SERVER_SETTER", createVehSetterHandler);
+		fx::ScriptEngine::RegisterNativeHandler(0x6ae51d4b, createVehSetterHandler);
+		fx::ScriptEngine::RegisterNativeHandler(0xb5f99936, createVehSetterHandler);
 
 		fx::ScriptEngine::RegisterNativeHandler("CREATE_PED", [=](fx::ScriptContext& ctx)
 		{

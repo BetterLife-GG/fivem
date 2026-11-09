@@ -5,7 +5,7 @@ apiset: server
 ## CREATE_VEHICLE_SERVER_SETTER
 
 ```c
-Vehicle CREATE_VEHICLE_SERVER_SETTER(Hash modelHash, char* type, float x, float y, float z, float heading);
+Vehicle CREATE_VEHICLE_SERVER_SETTER(Hash modelHash, char* type, float x, float y, float z, float heading, char* properties);
 ```
 
 Equivalent to CREATE_VEHICLE, but it uses 'server setter' logic (like the former CREATE_AUTOMOBILE) as a workaround for
@@ -20,6 +20,7 @@ Unlike CREATE_AUTOMOBILE, this supports other vehicle types as well.
 * **y**: Spawn coordinate Y component.
 * **z**: Spawn coordinate Z component.
 * **heading**: Heading to face towards, in degrees.
+* **properties**: Optional JSON string containing vehicle properties and tuning mods.
 
 ## Return value
 A script handle for the vehicle, or 0 if the vehicle failed to be created.

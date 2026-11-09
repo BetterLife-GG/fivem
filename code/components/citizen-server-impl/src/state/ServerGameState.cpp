@@ -401,21 +401,152 @@ float ServerGameState::GetPlayerMaxVelocity(uint32_t netId) const
 
 void ServerGameState::SetPlayerHiddenFromOthers(uint32_t netId, bool hidden)
 {
-	std::unique_lock _(m_hiddenPlayersMutex);
-	if (hidden)
+	auto creg = m_instance->GetComponent<fx::ClientRegistry>();
+	fx::ClientSharedPtr client;
+	if (creg)
 	{
-		m_hiddenPlayers.insert(netId);
+		client = creg->GetClientByNetID(netId);
+		if (!client && netId < 2049)
+		{
+			client = creg->GetClientBySlotID(netId);
+		}
 	}
-	else
+
+	if (client)
 	{
-		m_hiddenPlayers.erase(netId);
+		netId = client->GetNetId();
+	}
+
+	{
+		std::unique_lock _(m_hiddenPlayersMutex);
+		if (hidden)
+		{
+			m_hiddenPlayers.insert(netId);
+		}
+		else
+		{
+			m_hiddenPlayers.erase(netId);
+		}
+	}
+
+	// Mute/unmute player in Mumble voice server if available
+	auto muteHandler = fx::ScriptEngine::GetNativeHandler(HashString("MUMBLE_SET_PLAYER_MUTED"));
+	if (muteHandler)
+	{
+		fx::ScriptContextBuffer ctxBuf;
+		ctxBuf.Push(int32_t(netId));
+		ctxBuf.Push(hidden);
+		muteHandler(ctxBuf);
+	}
+
+	if (client)
+	{
+		auto data = GetClientDataUnlocked(this, client);
+		if (data)
+		{
+			sync::SyncEntityPtr playerEntity;
+			{
+				std::shared_lock _lock(data->playerEntityMutex);
+				playerEntity = data->playerEntity.lock();
+			}
+
+			if (playerEntity)
+			{
+				std::unique_lock _g(playerEntity->guidMutex);
+				playerEntity->outOfScopeFor.reset();
+				playerEntity->deletedFor.reset();
+
+				std::lock_guard _f(playerEntity->frameMutex);
+				for (size_t i = 0; i < playerEntity->lastFramesSent.size(); ++i)
+				{
+					playerEntity->lastFramesSent[i] = 0;
+				}
+				playerEntity->timestamp = msec().count();
+			}
+		}
 	}
 }
 
 bool ServerGameState::IsPlayerHiddenFromOthers(uint32_t netId) const
 {
-	std::shared_lock _(m_hiddenPlayersMutex);
-	return m_hiddenPlayers.find(netId) != m_hiddenPlayers.end();
+	{
+		std::shared_lock _(m_hiddenPlayersMutex);
+		if (m_hiddenPlayers.find(netId) != m_hiddenPlayers.end())
+		{
+			return true;
+		}
+	}
+
+	auto creg = m_instance->GetComponent<fx::ClientRegistry>();
+	if (creg)
+	{
+		auto client = creg->GetClientByNetID(netId);
+		if (!client && netId < 2049)
+		{
+			client = creg->GetClientBySlotID(netId);
+		}
+
+		if (client && client->GetNetId() != netId)
+		{
+			std::shared_lock _(m_hiddenPlayersMutex);
+			return m_hiddenPlayers.find(client->GetNetId()) != m_hiddenPlayers.end();
+		}
+	}
+
+	return false;
+}
+
+bool ServerGameState::IsEntityHiddenFromClient(const fx::sync::SyncEntityPtr& entity, const fx::ClientSharedPtr& client) const
+{
+	if (!entity)
+	{
+		return false;
+	}
+
+	auto entityClient = entity->GetClient();
+	const bool ownsEntity = (client && entityClient && entityClient->GetNetId() == client->GetNetId());
+
+	// An entity is never hidden from its owning client
+	if (ownsEntity)
+	{
+		return false;
+	}
+
+	// When client is hidden (e.g. admin in ghost mode), admin MUST see everything and everyone!
+	if (client && IsPlayerHiddenFromOthers(client->GetNetId()))
+	{
+		return false;
+	}
+
+	// Hide player ped from all other clients if the player is hidden from others!
+	if (entity->type == sync::NetObjEntityType::Player && entityClient && IsPlayerHiddenFromOthers(entityClient->GetNetId()))
+	{
+		return true;
+	}
+
+	// Hide entities attached to a hidden player ped (props/weapons) from all other clients
+	if (entity->syncTree)
+	{
+		if (auto attach = entity->syncTree->GetAttachment())
+		{
+			if (attach->attached && attach->attachedTo != 0)
+			{
+				if (auto parentEnt = const_cast<ServerGameState*>(this)->GetEntity(0, attach->attachedTo))
+				{
+					if (parentEnt->type == sync::NetObjEntityType::Player)
+					{
+						auto parentClient = parentEnt->GetClient();
+						if (parentClient && IsPlayerHiddenFromOthers(parentClient->GetNetId()))
+						{
+							return true;
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return false;
 }
 
 void ServerGameState::SetPlayerFrozen(uint32_t netId, bool frozen)
@@ -1249,10 +1380,6 @@ void ServerGameState::Tick(fx::ServerInstanceBase* instance)
 					{
 						isRelevant = true;
 					}
-					else
-					{
-						// #TODO1SBIG: check if the player is not acked when bigmode is made unreliable
-					}
 				}
 				else if (entity->type == sync::NetObjEntityType::Automobile ||
 					entity->type == sync::NetObjEntityType::Bike ||
@@ -1316,6 +1443,8 @@ void ServerGameState::Tick(fx::ServerInstanceBase* instance)
 				isRelevant = false;
 			}
 
+
+
 			// don't route entities that aren't part of the routing bucket
 			if (clientDataUnlocked->routingBucket != entity->routingBucket)
 			{
@@ -1325,11 +1454,6 @@ void ServerGameState::Tick(fx::ServerInstanceBase* instance)
 				}
 			}
 
-			// don't route entities belonging to hidden clients to other players
-			if (!ownsEntity && entityClient && IsPlayerHiddenFromOthers(entityClient->GetNetId()))
-			{
-				isRelevant = false;
-			}
 
 			// if we own this entity, we need to assign as relevant.
 			// -> even if not client-script, as if it isn't, we'll end up stuck without migrating it
@@ -1766,6 +1890,7 @@ void ServerGameState::Tick(fx::ServerInstanceBase* instance)
 			{
 				std::unique_lock _(entity->clientMutex);
 				auto cl = entity->GetClientUnsafe().lock();
+
 				if (!cl || (entity->wantsReassign && cl->GetNetId() != client->GetNetId()))
 				{
 					#ifdef STATE_FIVE
@@ -2007,6 +2132,34 @@ void ServerGameState::Tick(fx::ServerInstanceBase* instance)
 						state.timestamp = 0;
 						state.lastFrameIndex = frameIndex;
 						state.isFirstUpdate = isFirstFrameUpdate;
+
+						if (entityClient && cmdState.client && entityClient->GetNetId() != cmdState.client->GetNetId())
+						{
+							if (entity->type == sync::NetObjEntityType::Player && IsPlayerHiddenFromOthers(entityClient->GetNetId()))
+							{
+								state.overridePosition = true;
+							}
+						}
+
+						if (!state.overridePosition && entity->syncTree && cmdState.client)
+						{
+							if (auto attach = entity->syncTree->GetAttachment())
+							{
+								if (attach->attached && attach->attachedTo != 0)
+								{
+									if (auto parentEnt = GetEntity(0, attach->attachedTo))
+									{
+										if (auto parentClient = parentEnt->GetClient())
+										{
+											if (parentClient->GetNetId() != cmdState.client->GetNetId() && IsPlayerHiddenFromOthers(parentClient->GetNetId()))
+											{
+												state.overridePosition = true;
+											}
+										}
+									}
+								}
+							}
+						}
 
 						bool wroteData = entity->syncTree->Unparse(state);
 
@@ -2340,6 +2493,8 @@ void ServerGameState::UpdateEntities()
 						}
 					}
 
+				
+
 					vehicleData->lastVehicle = vehicleData->curVehicle;
 					vehicleData->lastVehicleSeat = vehicleData->curVehicleSeat;
 				}
@@ -2501,6 +2656,7 @@ void ServerGameState::UpdateWorldGrid(fx::ServerInstanceBase* instance)
 	// update world grid
 	clientRegistry->ForAllClients([&](const fx::ClientSharedPtr& client)
 	{
+
 		auto slotID = client->GetSlotId();
 
 		if (slotID == -1)
@@ -2694,6 +2850,7 @@ void ServerGameState::ReassignEntityInner(uint32_t entityHandle, const fx::Clien
 	{
 		return;
 	}
+
 
 #ifdef STATE_FIVE
 	if (entity->forcedOwnerNetId != 0 && (!targetClient || targetClient->GetNetId() != entity->forcedOwnerNetId))
@@ -3071,6 +3228,11 @@ void ServerGameState::HandleClientDrop(const fx::ClientSharedPtr& client, uint16
 
 	// clear the player's world grid ownership
 	ClearClientFromWorldGrid(client);
+
+	{
+		std::unique_lock _h(m_hiddenPlayersMutex);
+		m_hiddenPlayers.erase(netId);
+	}
 
 	std::set<uint32_t> toErase;
 
@@ -8067,6 +8229,16 @@ inline bool RequestControlHandler(fx::ServerGameState* sgs, const fx::ClientShar
 		}
 	}
 
+	// If the entity's current owner is hidden, ALWAYS allow valid clients to take control!
+	if (auto currentOwner = entity->GetClient())
+	{
+		if (sgs->IsPlayerHiddenFromOthers(currentOwner->GetNetId()))
+		{
+			return true;
+		}
+	}
+
+
 	// if the entity has a forced owner and the sender is not that owner, reject
 	if (entity->forcedOwnerNetId != 0 && client->GetNetId() != entity->forcedOwnerNetId)
 	{
@@ -8271,6 +8443,15 @@ std::function<bool()> fx::ServerGameState::GetRequestControlEventHandler(const f
 			}
 		}
 
+		if (entity)
+		{
+			auto currentOwner = entity->GetClient();
+			if (currentOwner && IsPlayerHiddenFromOthers(currentOwner->GetNetId()))
+			{
+				ReassignEntity(entity->handle, client);
+			}
+		}
+
 		return true;
 	};
 #endif
@@ -8351,6 +8532,15 @@ std::function<bool()> fx::ServerGameState::GetRequestControlEventHandlerWithEven
 				{
 					return false;
 				}
+			}
+		}
+
+		if (entity)
+		{
+			auto currentOwner = entity->GetClient();
+			if (currentOwner && IsPlayerHiddenFromOthers(currentOwner->GetNetId()))
+			{
+				ReassignEntity(entity->handle, client);
 			}
 		}
 
@@ -8648,7 +8838,10 @@ bool fx::ServerGameState::IsClientRelevantEntity(const fx::ClientSharedPtr& clie
 		if (fx::sync::SyncEntityPtr syncEntity = val->playerEntity.lock())
 		{
 			std::shared_lock lock(syncEntity->guidMutex);
-			return syncEntity->relevantTo.test(objectId);
+			if (objectId < syncEntity->relevantTo.size())
+			{
+				return syncEntity->relevantTo.test(objectId);
+			}
 		}
 	}
 
@@ -8809,6 +9002,7 @@ static InitFunction initFunction([]()
 
 					if (targetClient)
 					{
+
 						auto targetClientData = GetClientDataUnlocked(sgs.GetRef(), targetClient);
 
 						if (targetClientData->routingBucket == bucket)

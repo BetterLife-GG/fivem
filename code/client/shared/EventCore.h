@@ -154,6 +154,16 @@ public:
 
 		return *this;
 	}
+
+	inline explicit operator bool() const
+	{
+		return m_ref != nullptr;
+	}
+
+	inline bool operator!() const
+	{
+		return m_ref == nullptr;
+	}
 };
 
 template<typename T>

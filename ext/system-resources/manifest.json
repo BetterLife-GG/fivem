@@ -1,7 +1,7 @@
 {
   "monitor": {
-    "url": "https://github.com/citizenfx/txAdmin/releases/download/v8.1.2/monitor.zip",
+    "url": "https://github.com/BetterLife-GG/txAdmin/releases/download/v8.1.2/monitor.zip",
     "version": "8.1.2",
-    "sha256": "8d87dc931459fe5599ab94d4d62f8fa382e6f11bedb67a15fe1c3543d45765d5"
+    "sha256": "71d406fa0e0ec3337c40007226ca2ba1ad3e95d5865d89462a05c55e45018009"
   }
 }

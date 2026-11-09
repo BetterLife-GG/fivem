@@ -20,18 +20,33 @@ inline auto MakeClientFunction(TFn fn, uintptr_t defaultValue = 0)
 		// get the server's client registry
 		auto clientRegistry = instance->GetComponent<fx::ClientRegistry>();
 
-		// parse the client ID
-		const char* id = context.CheckArgument<const char*>(0);
+		// parse the client ID (supports string "1" or integer 1)
+		uint32_t netId = 0;
+		uintptr_t rawId = context.GetArgument<uintptr_t>(0);
+		if (rawId < 0x10000)
+		{
+			netId = static_cast<uint32_t>(rawId);
+		}
+		else
+		{
+			const char* id = reinterpret_cast<const char*>(rawId);
+			if (id)
+			{
+				netId = atoi(id);
+			}
+		}
 
-		if (!id)
+		if (netId == 0)
 		{
 			context.SetResult(defaultValue);
 			return;
 		}
 
-		uint32_t netId = atoi(id);
-
 		auto client = clientRegistry->GetClientByNetID(netId);
+		if (!client && netId < 2049)
+		{
+			client = clientRegistry->GetClientBySlotID(netId);
+		}
 
 		if (!client)
 		{

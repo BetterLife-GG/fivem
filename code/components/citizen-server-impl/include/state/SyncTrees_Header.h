@@ -6,6 +6,12 @@
 
 namespace fx::sync
 {
+struct CSectorDataNode;
+struct CPlayerSectorPosNode;
+struct CSectorPositionDataNode;
+struct CPedSectorPosMapNode;
+struct CPedAttachDataNode;
+
 template<int Id1, int Id2, int Id3, bool CanSendOnFirst = true>
 struct NodeIds
 {
@@ -456,8 +462,63 @@ struct NodeWrapper : public NodeBase
 			}
 		}
 
+		if (state.overridePosition)
+		{
+			if constexpr (std::is_same_v<TNode, CSectorDataNode> ||
+				std::is_same_v<TNode, CPlayerSectorPosNode> ||
+				std::is_same_v<TNode, CSectorPositionDataNode> ||
+				std::is_same_v<TNode, CPedSectorPosMapNode> ||
+				std::is_same_v<TNode, CPedAttachDataNode>)
+			{
+				couldWrite = true;
+			}
+		}
+
 		if (shouldWrite(state, TIds::GetIds(), couldWrite))
 		{
+#ifdef STATE_FIVE
+			if (state.overridePosition)
+			{
+				if constexpr (std::is_same_v<TNode, CSectorDataNode>)
+				{
+					// Spoof sector to (512, 512, 0) -> gives base X=0, Y=0, Z=-1700
+					state.buffer.Write<int>(10, 512);
+					state.buffer.Write<int>(10, 512);
+					state.buffer.Write<int>(6, 0);
+					return true;
+				}
+				else if constexpr (std::is_same_v<TNode, CPlayerSectorPosNode>)
+				{
+					// CPlayerSectorPosNode: 1 bit standingOn (0), then 3 floats of 12 bits (posX=0, posY=0, posZ=0)
+					state.buffer.WriteBit(0);
+					state.buffer.WriteFloat(12, 54.0f, 0.0f);
+					state.buffer.WriteFloat(12, 54.0f, 0.0f);
+					state.buffer.WriteFloat(12, 69.0f, 0.0f);
+					return true;
+				}
+				else if constexpr (std::is_same_v<TNode, CSectorPositionDataNode>)
+				{
+					state.buffer.WriteFloat(12, 54.0f, 0.0f);
+					state.buffer.WriteFloat(12, 54.0f, 0.0f);
+					state.buffer.WriteFloat(12, 69.0f, 0.0f);
+					return true;
+				}
+				else if constexpr (std::is_same_v<TNode, CPedSectorPosMapNode>)
+				{
+					state.buffer.WriteFloat(12, 54.0f, 0.0f);
+					state.buffer.WriteFloat(12, 54.0f, 0.0f);
+					state.buffer.WriteFloat(12, 69.0f, 0.0f);
+					state.buffer.WriteBit(0);
+					return true;
+				}
+				else if constexpr (std::is_same_v<TNode, CPedAttachDataNode>)
+				{
+					// attached = false (1 bit)
+					state.buffer.WriteBit(0);
+					return true;
+				}
+			}
+#endif
 			state.buffer.WriteBits(data.data(), length);
 
 			return true;
